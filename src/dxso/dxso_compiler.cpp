@@ -360,18 +360,13 @@ namespace dxvk {
         m_module.enableCapability(spv::CapabilityGroupNonUniform);
         m_module.enableCapability(spv::CapabilityGroupNonUniformBallot);
 
-        DxsoRegisterInfo invocationMask;
-        invocationMask.type = { DxsoScalarType::Uint32, 4, 0 };
-        invocationMask.sclass = spv::StorageClassFunction;
+        DxsoRegisterInfo laneId;
+        laneId.type = { DxsoScalarType::Uint32, 1, 0 };
+        laneId.sclass = spv::StorageClassInput;
 
-        m_ps.invocationMask = emitNewVariable(invocationMask);
-        m_module.setDebugName(m_ps.invocationMask, "fInvocationMask");
-
-        m_module.opStore(m_ps.invocationMask,
-          m_module.opGroupNonUniformBallot(
-            getVectorTypeId({ DxsoScalarType::Uint32, 4 }),
-            m_module.constu32(spv::ScopeSubgroup),
-            m_module.constBool(true)));
+        m_ps.builtinLaneId = emitNewBuiltinVariable(
+          laneId, spv::BuiltInSubgroupLocalInvocationId,
+          "fLaneId", 0);
       }
     }
   }
@@ -633,7 +628,7 @@ namespace dxvk {
 
     DxsoSampler& sampler = m_samplers[idx];
 
-    sampler.depthSpecConst = m_module.specConstBool(false);
+    sampler.depthSpecConst = m_module.specConstBool(true);
     m_module.decorateSpecId(sampler.depthSpecConst, depthBinding);
     m_module.setDebugName(sampler.depthSpecConst,
       str::format("s", idx, "_useShadow").c_str());
@@ -1544,11 +1539,15 @@ namespace dxvk {
         result.id = m_module.opExp2(typeId,
           emitRegisterLoad(src[0], mask).id);
         break;
-      case DxsoOpcode::Pow:
-        result.id = m_module.opPow(typeId,
-          emitRegisterLoad(src[0], mask).id,
-          emitRegisterLoad(src[1], mask).id);
+      case DxsoOpcode::Pow: {
+        uint32_t base = emitRegisterLoad(src[0], mask).id;
+        base = m_module.opFAbs(typeId, base);
+
+        uint32_t exponent = emitRegisterLoad(src[1], mask).id;
+
+        result.id = m_module.opPow(typeId, base, exponent);
         break;
+      }
       case DxsoOpcode::Abs:
         result.id = m_module.opFAbs(typeId,
           emitRegisterLoad(src[0], mask).id);
@@ -1732,7 +1731,8 @@ namespace dxvk {
         dot.id = m_module.opFAdd(scalarTypeId,
           dot.id, emitRegisterLoad(src[2], addSrcMask).id);
 
-        result.id = emitRegisterExtend(dot, result.type.ccount).id;
+        result.id   = dot.id;
+        result.type = scalarType;
         break;
       }
       case DxsoOpcode::DsX:
@@ -2276,19 +2276,37 @@ void DxsoCompiler::emitControlFlowGenericLoop(
 
       if (m_moduleInfo.options.useSubgroupOpsForEarlyDiscard) {
         uint32_t ballot = m_module.opGroupNonUniformBallot(
-          m_ps.ballotType,
+          getVectorTypeId({ DxsoScalarType::Uint32, 4 }),
           m_module.constu32(spv::ScopeSubgroup),
           killState);
         
-        uint32_t invocationMask = m_module.opLoad(
-          m_ps.ballotType,
-          m_ps.invocationMask);
+        uint32_t laneId = m_module.opLoad(
+          getScalarTypeId(DxsoScalarType::Uint32),
+          m_ps.builtinLaneId);
+
+        uint32_t laneIdPart = m_module.opShiftRightLogical(
+          getScalarTypeId(DxsoScalarType::Uint32),
+          laneId, m_module.constu32(5));
+
+        uint32_t laneMask = m_module.opVectorExtractDynamic(
+          getScalarTypeId(DxsoScalarType::Uint32),
+          ballot, laneIdPart);
+
+        uint32_t laneIdQuad = m_module.opBitwiseAnd(
+          getScalarTypeId(DxsoScalarType::Uint32),
+          laneId, m_module.constu32(0x1c));
+
+        laneMask = m_module.opShiftRightLogical(
+          getScalarTypeId(DxsoScalarType::Uint32),
+          laneMask, laneIdQuad);
+
+        laneMask = m_module.opBitwiseAnd(
+          getScalarTypeId(DxsoScalarType::Uint32),
+          laneMask, m_module.constu32(0xf));
         
-        uint32_t killSubgroup = m_module.opAll(
+        uint32_t killSubgroup = m_module.opIEqual(
           m_module.defBoolType(),
-          m_module.opIEqual(
-            m_module.defVectorType(m_module.defBoolType(), 4),
-            ballot, invocationMask));
+          laneMask, m_module.constu32(0xf));
         
         uint32_t labelIf  = m_module.allocateId();
         uint32_t labelEnd = m_module.allocateId();

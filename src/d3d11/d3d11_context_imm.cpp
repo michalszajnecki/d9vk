@@ -174,7 +174,7 @@ namespace dxvk {
           D3D11_MAPPED_SUBRESOURCE*   pMappedResource) {
     D3D10DeviceLock lock = LockContext();
 
-    if (!pResource || !pMappedResource)
+    if (unlikely(!pResource || !pMappedResource))
       return E_INVALIDARG;
     
     D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
@@ -182,7 +182,7 @@ namespace dxvk {
 
     HRESULT hr;
     
-    if (resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+    if (likely(resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER)) {
       hr = MapBuffer(
         static_cast<D3D11Buffer*>(pResource),
         MapType, MapFlags, pMappedResource);
@@ -206,13 +206,13 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11ImmediateContext::Unmap(
           ID3D11Resource*             pResource,
           UINT                        Subresource) {
-    D3D10DeviceLock lock = LockContext();
-
     D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     pResource->GetType(&resourceDim);
     
-    if (resourceDim != D3D11_RESOURCE_DIMENSION_BUFFER)
+    if (unlikely(resourceDim != D3D11_RESOURCE_DIMENSION_BUFFER)) {
+      D3D10DeviceLock lock = LockContext();
       UnmapImage(GetCommonTexture(pResource), Subresource);
+    }
   }
   
   
@@ -535,6 +535,32 @@ namespace dxvk {
   }
   
   
+  void STDMETHODCALLTYPE D3D11ImmediateContext::SwapDeviceContextState(
+          ID3DDeviceContextState*           pState,
+          ID3DDeviceContextState**          ppPreviousState) {
+    InitReturnPtr(ppPreviousState);
+
+    if (!pState)
+      return;
+    
+    Com<D3D11DeviceContextState> oldState = std::move(m_stateObject);
+    Com<D3D11DeviceContextState> newState = static_cast<D3D11DeviceContextState*>(pState);
+
+    if (oldState == nullptr)
+      oldState = new D3D11DeviceContextState(m_parent);
+    
+    if (ppPreviousState)
+      *ppPreviousState = oldState.ref();
+    
+    m_stateObject = newState;
+
+    oldState->SetState(m_state);
+    newState->GetState(m_state);
+
+    RestoreState();
+  }
+
+
   void D3D11ImmediateContext::SynchronizeCsThread() {
     D3D10DeviceLock lock = LockContext();
 

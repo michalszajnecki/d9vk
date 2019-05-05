@@ -127,13 +127,6 @@ namespace dxvk {
   }
 
 
-  void STDMETHODCALLTYPE D3D11DeviceContext::SwapDeviceContextState(
-          ID3DDeviceContextState*  pState, 
-          ID3DDeviceContextState** ppPreviousState) {
-    Logger::err("D3D11DeviceContext::SwapDeviceContextState: Not implemented");
-  }
-  
-
   void STDMETHODCALLTYPE D3D11DeviceContext::GetDevice(ID3D11Device **ppDevice) {
     *ppDevice = ref(m_parent);
   }
@@ -670,9 +663,13 @@ namespace dxvk {
     if (!buf || !uav)
       return;
 
+    auto counterSlice = uav->GetCounterSlice();
+    if (!counterSlice.defined())
+      return;
+
     EmitCs([
       cDstSlice = buf->GetBufferSlice(DstAlignedByteOffset),
-      cSrcSlice = uav->GetCounterSlice()
+      cSrcSlice = std::move(counterSlice)
     ] (DxvkContext* ctx) {
       ctx->copyBuffer(
         cDstSlice.buffer(),
@@ -1357,7 +1354,7 @@ namespace dxvk {
     EmitCs([=] (DxvkContext* ctx) {
       ctx->drawIndirectXfb(ctrBuf,
         vtxBuf.buffer()->getXfbVertexStride(),
-        0); // FIXME offset?
+        vtxBuf.offset());
     });
   }
   
@@ -3063,9 +3060,9 @@ namespace dxvk {
     // but the viewport coordinates are aligned to the top-left
     // corner so we can get away with flipping the viewport.
     for (uint32_t i = 0; i < m_state.rs.numViewports; i++) {
-      const D3D11_VIEWPORT& vp = m_state.rs.viewports.at(i);
+      const D3D11_VIEWPORT& vp = m_state.rs.viewports[i];
       
-      viewports.at(i) = VkViewport {
+      viewports[i] = VkViewport {
         vp.TopLeftX, vp.Height + vp.TopLeftY,
         vp.Width,   -vp.Height,
         vp.MinDepth, vp.MaxDepth,
@@ -3085,7 +3082,7 @@ namespace dxvk {
     
     for (uint32_t i = 0; i < m_state.rs.numViewports; i++) {
       if (enableScissorTest && (i < m_state.rs.numScissors)) {
-        D3D11_RECT sr = m_state.rs.scissors.at(i);
+        D3D11_RECT sr = m_state.rs.scissors[i];
         
         VkOffset2D srPosA;
         srPosA.x = std::max<int32_t>(0, sr.left);
@@ -3099,9 +3096,9 @@ namespace dxvk {
         srSize.width  = uint32_t(srPosB.x - srPosA.x);
         srSize.height = uint32_t(srPosB.y - srPosA.y);
         
-        scissors.at(i) = VkRect2D { srPosA, srSize };
+        scissors[i] = VkRect2D { srPosA, srSize };
       } else {
-        scissors.at(i) = VkRect2D {
+        scissors[i] = VkRect2D {
           VkOffset2D { 0, 0 },
           VkExtent2D {
             D3D11_VIEWPORT_BOUNDS_MAX,
@@ -3120,7 +3117,18 @@ namespace dxvk {
         cScissors.data());
     });
   }
-  
+
+
+  void D3D11DeviceContext::ApplyUnusedState() {
+    // Initialize state that isn't exposed in D3D11
+    EmitCs([] (DxvkContext* ctx) {
+      DxvkExtraState xs;
+      xs.alphaCompareOp = VK_COMPARE_OP_ALWAYS;
+
+      ctx->setExtraState(xs);
+    });
+  }
+
   
   void D3D11DeviceContext::BindShader(
           DxbcProgramType       ShaderStage,
@@ -3157,10 +3165,10 @@ namespace dxvk {
     // so we'll just create a new one every time the render
     // target bindings are updated. Set up the attachments.
     for (UINT i = 0; i < m_state.om.renderTargetViews.size(); i++) {
-      if (m_state.om.renderTargetViews.at(i) != nullptr) {
+      if (m_state.om.renderTargetViews[i] != nullptr) {
         attachments.color[i] = {
-          m_state.om.renderTargetViews.at(i)->GetImageView(),
-          m_state.om.renderTargetViews.at(i)->GetRenderLayout() };
+          m_state.om.renderTargetViews[i]->GetImageView(),
+          m_state.om.renderTargetViews[i]->GetRenderLayout() };
       }
     }
     
@@ -3514,7 +3522,7 @@ namespace dxvk {
       return;
     
     for (UINT i = 0; i < m_state.om.renderTargetViews.size(); i++) {
-      m_state.om.renderTargetViews.at(i) = i < NumViews
+      m_state.om.renderTargetViews[i] = i < NumViews
         ? static_cast<D3D11RenderTargetView*>(ppRenderTargetViews[i])
         : nullptr;
     }
@@ -3561,6 +3569,7 @@ namespace dxvk {
     ApplyStencilRef();
     ApplyRasterizerState();
     ApplyViewportState();
+    ApplyUnusedState();
 
     BindDrawBuffer(
       m_state.id.argBuffer.ptr());
