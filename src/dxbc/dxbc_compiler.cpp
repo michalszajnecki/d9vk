@@ -44,13 +44,6 @@ namespace dxvk {
       m_oRegs.at(i) = DxbcRegisterPointer { };
     }
     
-    // Clear spec constants
-    for (uint32_t i = 0; i < m_specConstants.size(); i++) {
-      m_specConstants.at(i) = DxbcRegisterValue {
-        DxbcVectorType { DxbcScalarType::Uint32, 0 },
-        0 };
-    }
-    
     this->emitInit();
   }
   
@@ -189,7 +182,7 @@ namespace dxvk {
 
     for (auto e = m_isgn->begin(); e != m_isgn->end(); e++) {
       emitDclInput(e->registerId, 1,
-        e->componentMask, e->systemValue,
+        e->componentMask, DxbcSystemValue::None,
         DxbcInterpolationMode::Undefined);
     }
 
@@ -3983,15 +3976,33 @@ namespace dxvk {
           m_module.constu32(spv::ScopeSubgroup),
           killState);
         
-        uint32_t invocationMask = m_module.opLoad(
-          getVectorTypeId({ DxbcScalarType::Uint32, 4 }),
-          m_ps.invocationMask);
+        uint32_t laneId = m_module.opLoad(
+          getScalarTypeId(DxbcScalarType::Uint32),
+          m_ps.builtinLaneId);
         
-        uint32_t killSubgroup = m_module.opAll(
+        uint32_t laneIdPart = m_module.opShiftRightLogical(
+          getScalarTypeId(DxbcScalarType::Uint32),
+          laneId, m_module.constu32(5));
+        
+        uint32_t laneMask = m_module.opVectorExtractDynamic(
+          getScalarTypeId(DxbcScalarType::Uint32),
+          ballot, laneIdPart);
+        
+        uint32_t laneIdQuad = m_module.opBitwiseAnd(
+          getScalarTypeId(DxbcScalarType::Uint32),
+          laneId, m_module.constu32(0x1c));
+        
+        laneMask = m_module.opShiftRightLogical(
+          getScalarTypeId(DxbcScalarType::Uint32),
+          laneMask, laneIdQuad);
+        
+        laneMask = m_module.opBitwiseAnd(
+          getScalarTypeId(DxbcScalarType::Uint32),
+          laneMask, m_module.constu32(0xf));
+        
+        uint32_t killSubgroup = m_module.opIEqual(
           m_module.defBoolType(),
-          m_module.opIEqual(
-            m_module.defVectorType(m_module.defBoolType(), 4),
-            ballot, invocationMask));
+          laneMask, m_module.constu32(0xf));
         
         DxbcConditional cond;
         cond.labelIf  = m_module.allocateId();
@@ -5051,7 +5062,18 @@ namespace dxvk {
     if (resource.type == DxbcOperandType::Rasterizer) {
       // SPIR-V has no gl_NumSamples equivalent, so we have
       // to work around it using a specialization constant
-      return getSpecConstant(DxvkSpecConstantId::RasterizerSampleCount);
+      if (!m_ps.specRsSampleCount) {
+        m_ps.specRsSampleCount = emitNewSpecConstant(
+          DxvkSpecConstantId::RasterizerSampleCount,
+          DxbcScalarType::Uint32, 1,
+          "RasterizerSampleCount");
+      }
+
+      DxbcRegisterValue result;
+      result.type.ctype  = DxbcScalarType::Uint32;
+      result.type.ccount = 1;
+      result.id = m_ps.specRsSampleCount;
+      return result;
     } else {
       DxbcBufferInfo info = getBufferInfo(resource);
       
@@ -5409,40 +5431,17 @@ namespace dxvk {
   }
   
   
-  DxbcRegisterValue DxbcCompiler::getSpecConstant(DxvkSpecConstantId specId) {
-    const uint32_t specIdOffset = uint32_t(specId) - uint32_t(DxvkSpecConstantId::SpecConstantIdMin);
+  uint32_t DxbcCompiler::emitNewSpecConstant(
+          DxvkSpecConstantId      specId,
+          DxbcScalarType          type,
+          uint32_t                value,
+    const char*                   name) {
+    uint32_t id = m_module.specConst32(
+      getScalarTypeId(type), value);
     
-    // Look up spec constant in the array
-    DxbcRegisterValue value = m_specConstants.at(specIdOffset);
-    
-    if (value.id != 0)
-      return value;
-    
-    // Declare a new specialization constant if needed
-    DxbcSpecConstant info = getSpecConstantProperties(specId);
-    
-    value.type.ctype  = info.ctype;
-    value.type.ccount = info.ccount;
-    value.id = m_module.specConst32(
-      getVectorTypeId(value.type),
-      info.value);
-    
-    m_module.decorateSpecId(value.id, uint32_t(specId));
-    m_module.setDebugName(value.id, info.name);
-    
-    m_specConstants.at(specIdOffset) = value;
-    return value;
-  }
-  
-  
-  DxbcSpecConstant DxbcCompiler::getSpecConstantProperties(DxvkSpecConstantId specId) {
-    static const std::array<DxbcSpecConstant,
-      uint32_t(DxvkSpecConstantId::SpecConstantIdMax) -
-      uint32_t(DxvkSpecConstantId::SpecConstantIdMin) + 1> s_specConstants = {{
-        { DxbcScalarType::Uint32,   1,   1, "RasterizerSampleCount" },
-    }};
-    
-    return s_specConstants.at(uint32_t(specId) - uint32_t(DxvkSpecConstantId::SpecConstantIdMin));
+    m_module.decorateSpecId(id, uint32_t(specId));
+    m_module.setDebugName(id, name);
+    return id;
   }
   
   
@@ -6544,18 +6543,13 @@ namespace dxvk {
         m_module.enableCapability(spv::CapabilityGroupNonUniform);
         m_module.enableCapability(spv::CapabilityGroupNonUniformBallot);
 
-        DxbcRegisterInfo invocationMask;
-        invocationMask.type = { DxbcScalarType::Uint32, 4, 0 };
-        invocationMask.sclass = spv::StorageClassFunction;
+        DxbcRegisterInfo laneId;
+        laneId.type = { DxbcScalarType::Uint32, 1, 0 };
+        laneId.sclass = spv::StorageClassInput;
 
-        m_ps.invocationMask = emitNewVariable(invocationMask);
-        m_module.setDebugName(m_ps.invocationMask, "fInvocationMask");
-        
-        m_module.opStore(m_ps.invocationMask,
-          m_module.opGroupNonUniformBallot(
-            getVectorTypeId({ DxbcScalarType::Uint32, 4 }),
-            m_module.constu32(spv::ScopeSubgroup),
-            m_module.constBool(true)));
+        m_ps.builtinLaneId = emitNewBuiltinVariable(
+          laneId, spv::BuiltInSubgroupLocalInvocationId,
+          "fLaneId");
       }
     }
   }
