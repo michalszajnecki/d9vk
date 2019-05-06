@@ -142,8 +142,12 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::EvictManagedResources() {
+    if (!m_d3d9Options.trustEvictions)
+      return D3D_OK;
+
     // Remove our mapping/staging buffers. Will force readback.
-    auto lock = std::lock_guard(g_managedTextureMutex);
+    auto managedLock = std::lock_guard(g_managedTextureMutex);
+    auto contextLock = LockDevice();
 
     for (auto texture : g_managedTextures) {
       D3D9CommonTexture* commonTex = GetCommonTexture(texture);
@@ -2505,10 +2509,23 @@ namespace dxvk {
     if (unlikely(pPresentationParameters == nullptr))
       return D3DERR_INVALIDCALL;
 
-    if (!IsSupportedBackBufferFormat(
-      EnumerateFormat(pPresentationParameters->BackBufferFormat),
-      pPresentationParameters->Windowed))
-      return D3DERR_INVALIDCALL;
+    D3D9Format backBufferFmt = EnumerateFormat(pPresentationParameters->BackBufferFormat);
+
+    Logger::info(str::format(
+      "D3D9DeviceEx::ResetEx:\n",
+      "  Requested Presentation Parameters\n",
+      "    - Width:              ", pPresentationParameters->BackBufferWidth, "\n",
+      "    - Height:             ", pPresentationParameters->BackBufferHeight, "\n",
+      "    - Format:             ", backBufferFmt, "\n"
+      "    - Auto Depth Stencil: ", pPresentationParameters->EnableAutoDepthStencil ? "true" : "false", "\n",
+      "    - Windowed:           ", pPresentationParameters->Windowed ? "true" : "false", "\n"));
+
+    if (backBufferFmt != D3D9Format::Unknown) {
+      if (!IsSupportedBackBufferFormat(
+        backBufferFmt,
+        pPresentationParameters->Windowed))
+        return D3DERR_INVALIDCALL;
+    }
 
     SetDepthStencilSurface(nullptr);
 
@@ -3002,13 +3019,11 @@ namespace dxvk {
             DWORD                   Flags) {
     auto lock = LockDevice();
 
-    // TODO: Some fastpath for D3DLOCK_READONLY.
-
     UINT Subresource = pResource->CalcSubresource(Face, MipLevel);
     auto& desc = *(pResource->Desc());
 
     bool alloced = pResource->AllocBuffers(Face, MipLevel);
-    bool evicted = pResource->HasBeenEvicted();
+    bool needsReadback = pResource->UnevictSubresource(Face, MipLevel);
 
     const Rc<DxvkImage>  mappedImage  = pResource->GetImage();
     const Rc<DxvkBuffer> mappedBuffer = pResource->GetMappedBuffer(Subresource);
@@ -3042,49 +3057,6 @@ namespace dxvk {
       data += offset;
       pLockedBox->pBits = data;
       return D3D_OK;
-    } else if (formatInfo->aspectMask == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-      VkExtent3D levelExtent = mappedImage->mipLevelExtent(subresource.mipLevel);
-
-      // The actual Vulkan image format may differ
-      // from the format requested by the application
-      VkFormat packFormat = GetPackedDepthStencilFormat(pResource->Desc()->Format);
-      auto packFormatInfo = imageFormatInfo(packFormat);
-
-      // This is slow, but we have to dispatch a pack
-      // operation and then immediately synchronize.
-      EmitCs([
-        cImageBuffer = mappedBuffer,
-        cImage       = mappedImage,
-        cSubresource = subresource,
-        cFormat      = packFormat
-      ] (DxvkContext* ctx) {
-        auto layers = vk::makeSubresourceLayers(cSubresource);
-        auto x = cImage->mipLevelExtent(cSubresource.mipLevel);
-
-        VkOffset2D offset = { 0, 0 };
-        VkExtent2D extent = { x.width, x.height };
-
-        ctx->copyDepthStencilImageToPackedBuffer(
-          cImageBuffer, 0, cImage, layers, offset, extent, cFormat);
-      });
-
-      WaitForResource(mappedBuffer, 0);
-
-      DxvkBufferSliceHandle physSlice = mappedBuffer->getSliceHandle();
-
-      pLockedBox->RowPitch   = packFormatInfo->elementSize * levelExtent.width;
-      pLockedBox->SlicePitch = packFormatInfo->elementSize * levelExtent.width * levelExtent.height;
-
-      const uint32_t offset = CalcImageLockOffset(
-        pLockedBox->SlicePitch,
-        pLockedBox->RowPitch,
-        packFormatInfo,
-        pBox);
-
-      uint8_t* data = reinterpret_cast<uint8_t*>(physSlice.mapPtr);
-      data += offset;
-      pLockedBox->pBits = data;
-      return D3D_OK;
     } else {
       VkExtent3D levelExtent = mappedImage->mipLevelExtent(subresource.mipLevel);
       VkExtent3D blockCount  = util::computeBlockCount(levelExtent, formatInfo->blockSize);
@@ -3103,16 +3075,13 @@ namespace dxvk {
           ctx->invalidateBuffer(cImageBuffer, cBufferSlice);
         });
       }
-      else if (!alloced || (desc.Pool == D3DPOOL_MANAGED && !evicted)) {
+      else if (!alloced || (desc.Pool == D3DPOOL_MANAGED && !needsReadback)) {
         // Managed resources and ones we haven't newly allocated
         // are meant to be able to provide readback without waiting.
         // We always keep a copy of them in system memory for this reason.
         // No need to wait as its not in use.
 
         physSlice = mappedBuffer->getSliceHandle();
-
-        if (alloced)
-          std::memset(physSlice.mapPtr, 0, mappedBuffer->info().size);
       }
       else {
         // When using any map mode which requires the image contents

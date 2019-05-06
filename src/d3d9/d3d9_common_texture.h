@@ -184,14 +184,12 @@ namespace dxvk {
         m_device->GenerateMips(this);
     }
 
-    bool HasBeenEvicted() {
-      return m_evicted;
-    }
-
     void Evict() {
       this->DeallocFixupBuffers();
       this->DeallocMappingBuffers();
-      m_evicted = true;
+      
+      for (uint32_t i = 0; i < 6; i++)
+        m_evictedSubresources[i] = 0xffff;
     }
 
     VkImageViewType GetImageViewType() const;
@@ -251,6 +249,14 @@ namespace dxvk {
       return false;
     }
 
+    bool UnevictSubresource(UINT Face, UINT MipLevel) {
+      const uint16_t mipBit = 1u << MipLevel;
+
+      bool shouldUnevict = (m_evictedSubresources[Face] & mipBit) != 0;
+      m_evictedSubresources[Face] &= ~mipBit;
+      return shouldUnevict;
+    }
+
     std::array<uint16_t, 6> DiscardSubresourceMasking() {
       std::array<uint16_t, 6> copy = m_mappedSubresources;
 
@@ -307,17 +313,18 @@ namespace dxvk {
 
     Rc<DxvkImageView>                 m_depthStencilView;
 
-    std::array<uint16_t, 6>           m_mappedSubresources;
-    std::array<uint16_t, 6>           m_unmappedSubresources;
-    std::array<uint16_t, 6>           m_readOnlySubresources;
+    std::array<uint16_t, 6>           m_mappedSubresources   = { 0 };
+    std::array<uint16_t, 6>           m_unmappedSubresources = { 0 };
+    std::array<uint16_t, 6>           m_readOnlySubresources = { 0 };
+    std::array<uint16_t, 6>           m_evictedSubresources  = { 0 };
 
-    bool                              m_shadow;
-
-    bool                              m_evicted = false;
+    bool                              m_shadow               = false;
 
     BOOL CheckImageSupport(
       const DxvkImageCreateInfo*  pImageInfo,
       VkImageTiling         Tiling) const;
+
+    BOOL CalcShadowState() const;
 
     BOOL CheckFormatFeatureSupport(
       VkFormat              Format,

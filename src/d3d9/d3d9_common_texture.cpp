@@ -13,6 +13,15 @@ namespace dxvk {
     if (m_desc.Format == D3D9Format::NULL_FORMAT)
       return;
 
+    bool unknown      = m_desc.Format == D3D9Format::Unknown;
+    bool depthStencil = m_desc.Usage & D3DUSAGE_DEPTHSTENCIL;
+    if (unknown) {
+      if (!depthStencil)
+        m_desc.Format = D3D9Format::X8R8G8B8;
+      else
+        m_desc.Format = D3D9Format::D32;
+    }
+
     D3D9_VK_FORMAT_MAPPING formatInfo = m_device->LookupFormat(m_desc.Format);
 
     DxvkImageCreateInfo imageInfo;
@@ -66,7 +75,7 @@ namespace dxvk {
                        |  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     }
 
-    if (m_desc.Usage & D3DUSAGE_DEPTHSTENCIL) {
+    if (depthStencil) {
       imageInfo.usage  |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
       imageInfo.stages |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
                        |  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
@@ -122,8 +131,8 @@ namespace dxvk {
         "D3D9: Cannot create texture:",
         "\n  Format:  ", m_desc.Format,
         "\n  Extent:  ", m_desc.Width,
-        "x", m_desc.Height,
-        "x", m_desc.Depth,
+                    "x", m_desc.Height,
+                    "x", m_desc.Depth,
         "\n  Samples: ", m_desc.MultiSample,
         "\n  Layers:  ", GetLayerCount(),
         "\n  Levels:  ", m_desc.MipLevels,
@@ -153,31 +162,17 @@ namespace dxvk {
     if (possibleRT)
       CreateRenderTargetView();
 
-    for (uint32_t i = 0; i < m_readOnlySubresources.size(); i++)
-      m_readOnlySubresources.at(i) = 0;
-
-    DiscardSubresourceMasking();
-
     m_mappingBuffers.resize(GetSubresourceCount());
     m_fixupBuffers.resize(GetSubresourceCount());
 
-    DeallocFixupBuffers();
     DeallocMappingBuffers();
+    DeallocFixupBuffers();
 
-    std::array<D3D9Format, 3> shadowBlacklist = {
-      D3D9Format::INTZ, D3D9Format::DF16, D3D9Format::DF24
-    };
-
-    m_shadow = caps::IsDepthFormat(m_desc.Format);
-
-    for (uint32_t i = 0; i < shadowBlacklist.size(); i++) {
-      if (shadowBlacklist[i] == m_desc.Format)
-        m_shadow = false;
-    }
+    m_shadow = CalcShadowState();
   }
 
   D3D9CommonTexture::D3D9CommonTexture(
-          D3D9DeviceEx*      pDevice,
+          D3D9DeviceEx*           pDevice,
           Rc<DxvkImage>           Image,
           Rc<DxvkImageView>       ImageView,
           Rc<DxvkImageView>       ImageViewSrgb,
@@ -190,6 +185,14 @@ namespace dxvk {
     m_mapMode = m_image->info().tiling == VK_IMAGE_TILING_LINEAR
       ? D3D9_COMMON_TEXTURE_MAP_MODE_DIRECT
       : D3D9_COMMON_TEXTURE_MAP_MODE_BUFFER;
+
+    m_mappingBuffers.resize(GetSubresourceCount());
+    m_fixupBuffers.resize(GetSubresourceCount());
+
+    DeallocMappingBuffers();
+    DeallocFixupBuffers();
+
+    m_shadow = CalcShadowState();
   }
 
   VkImageSubresource D3D9CommonTexture::GetSubresourceFromIndex(
@@ -294,7 +297,23 @@ namespace dxvk {
         && (pImageInfo->extent.depth  <= formatProps.maxExtent.depth)
         && (pImageInfo->numLayers     <= formatProps.maxArrayLayers)
         && (pImageInfo->mipLevels     <= formatProps.maxMipLevels)
-       && (pImageInfo->sampleCount     & formatProps.sampleCounts);
+        && (pImageInfo->sampleCount     & formatProps.sampleCounts);
+  }
+
+
+  BOOL D3D9CommonTexture::CalcShadowState() const {
+    static std::array<D3D9Format, 3> shadowBlacklist = {
+      D3D9Format::INTZ, D3D9Format::DF16, D3D9Format::DF24
+    };
+
+    bool shadow = caps::IsDepthFormat(m_desc.Format);
+
+    for (uint32_t i = 0; i < shadowBlacklist.size(); i++) {
+      if (shadowBlacklist[i] == m_desc.Format)
+        shadow = false;
+    }
+
+    return shadow;
   }
 
 
