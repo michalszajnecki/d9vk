@@ -5,7 +5,10 @@
 #include "../d3d9/d3d9_caps.h"
 #include "../d3d9/d3d9_constant_set.h"
 #include "../d3d9/d3d9_state.h"
+#include "../d3d9/d3d9_spec_constants.h"
 #include "dxso_util.h"
+
+#include "../dxvk/dxvk_spec_const.h"
 
 #include <cfloat>
 
@@ -572,16 +575,19 @@ namespace dxvk {
       switch (type) {
         default:
         case DxsoTextureType::Texture2D:
+          sampler.dimensions = 2;
           dimensionality = spv::Dim2D;
           viewType = VK_IMAGE_VIEW_TYPE_2D;
           break;
 
         case DxsoTextureType::TextureCube:
+          sampler.dimensions = 3;
           dimensionality = spv::DimCube;
           viewType = VK_IMAGE_VIEW_TYPE_CUBE;
           break;
 
         case DxsoTextureType::Texture3D:
+          sampler.dimensions = 3;
           dimensionality = spv::Dim3D;
           viewType = VK_IMAGE_VIEW_TYPE_3D;
           break;
@@ -773,7 +779,7 @@ namespace dxvk {
       uint32_t var = m_module.opLoad(typeId, result.id);
 
       var = m_module.opBitFieldUExtract(
-        typeId, var, arrayIdx, m_module.constu32(1));
+        typeId, var, relativeIdx, m_module.constu32(1));
 
       typeId = getVectorTypeId(result.type);
 
@@ -820,6 +826,12 @@ namespace dxvk {
   DxsoRegisterPointer DxsoCompiler::emitGetOperandPtr(
       const DxsoBaseRegister& reg,
       const DxsoBaseRegister* relative) {
+    // Only float constants (+ io regs) may be indexed.
+    if (relative != nullptr && reg.id.type == DxsoRegisterType::Const) {
+      if (m_moduleInfo.options.strictConstantCopies || m_cFloat.at(reg.id.num).id != 0)
+        m_meta.needsConstantCopies = true;
+    }
+
     switch (reg.id.type) {
       case DxsoRegisterType::Temp: {
         DxsoRegisterPointer& ptr = m_rRegs.at(reg.id.num);
@@ -1355,6 +1367,12 @@ namespace dxvk {
 
     std::string name = str::format("cF", num, "_def");
     m_module.setDebugName(ptr.id, name.c_str());
+
+    DxsoDefinedConstant constant;
+    constant.uboIdx = ctx.dst.id.num;
+    for (uint32_t i = 0; i < 4; i++)
+      constant.float32[i] = data[i];
+    m_constants.push_back(constant);
   }
 
   void DxsoCompiler::emitDefI(const DxsoInstructionContext& ctx) {
@@ -1426,14 +1444,18 @@ namespace dxvk {
       if (dst.type.ctype == DxsoScalarType::Sint32)
         result.id = m_module.opConvertFtoS(typeId, src0.id);
       else { // Float32
-        result.id = m_module.opRound(getVectorTypeId(src0.type), src0.id);
+        // We need to floor for VS 1.1 and below, the documentation is a dirty stinking liar.
+        if (m_programInfo.majorVersion() < 2 && m_programInfo.minorVersion() < 2)
+          result.id = m_module.opFloor(getVectorTypeId(src0.type), src0.id);
+        else
+          result.id = m_module.opRound(getVectorTypeId(src0.type), src0.id);
         result.id = m_module.opConvertStoF(typeId, result.id);
       }
     }
     else // No special stuff needed!
       result.id = src0.id;
 
-    this->emitDstStore(dst, result, mask, ctx.dst.saturate);
+    this->emitDstStore(dst, result, mask, ctx.dst.saturate, ctx.dst.shift);
   }
 
 
@@ -1547,15 +1569,17 @@ namespace dxvk {
 
         uint32_t exponent = emitRegisterLoad(src[1], mask).id;
 
-        DxsoRegisterValue cmp;
-        cmp.type = { DxsoScalarType::Bool, result.type.ccount };
-        cmp.id = m_module.opFOrdEqual(getVectorTypeId(cmp.type),
-          exponent, m_module.constfReplicant(0.0f, cmp.type.ccount));
-
         result.id = m_module.opPow(typeId, base, exponent);
 
-        result.id = m_module.opSelect(typeId, cmp.id,
-          m_module.constfReplicant(1.0f, cmp.type.ccount), result.id);
+        if (m_moduleInfo.options.strictPow) {
+          DxsoRegisterValue cmp;
+          cmp.type  = { DxsoScalarType::Bool, result.type.ccount };
+          cmp.id    = m_module.opFOrdEqual(getVectorTypeId(cmp.type),
+            exponent, m_module.constfReplicant(0.0f, cmp.type.ccount));
+
+          result.id = m_module.opSelect(typeId, cmp.id,
+            m_module.constfReplicant(1.0f, cmp.type.ccount), result.id);
+        }
         break;
       }
       case DxsoOpcode::Abs:
@@ -1586,13 +1610,20 @@ namespace dxvk {
         DxsoRegMask srcMask(true, false, false, false);
         uint32_t src0 = emitRegisterLoad(src[0], srcMask).id;
 
-        std::array<uint32_t, 4> sincosVectorIndices = {
-          m_module.opCos(scalarTypeId, src0),
-          m_module.opSin(scalarTypeId, src0),
-          m_module.constf32(0.0f),
-          m_module.constf32(0.0f)
-        };
+        std::array<uint32_t, 4> sincosVectorIndices = { 0, 0, 0, 0 };
 
+        uint32_t index = 0;
+        if (mask[0])
+          sincosVectorIndices[index++] = m_module.opCos(scalarTypeId, src0);
+
+        if (mask[1])
+          sincosVectorIndices[index++] = m_module.opSin(scalarTypeId, src0);
+
+        for (; index < result.type.ccount; index++) {
+          if (sincosVectorIndices[index] == 0)
+            sincosVectorIndices[index] = m_module.constf32(0.0f);
+        }
+            
         if (result.type.ccount == 1)
           result.id = sincosVectorIndices[0];
         else
@@ -1751,7 +1782,7 @@ namespace dxvk {
         return;
     }
 
-    this->emitDstStore(dst, result, mask, ctx.dst.saturate);
+    this->emitDstStore(dst, result, mask, ctx.dst.saturate, ctx.dst.shift);
   }
 
 
@@ -1820,7 +1851,7 @@ namespace dxvk {
     result.id = m_module.opCompositeConstruct(
       typeId, iterCount, indices.data());
 
-    this->emitDstStore(dst, result, mask, ctx.dst.saturate);
+    this->emitDstStore(dst, result, mask, ctx.dst.saturate, ctx.dst.shift);
   }
 
 
@@ -2115,26 +2146,26 @@ void DxsoCompiler::emitControlFlowGenericLoop(
 
     const DxsoOpcode opcode = ctx.instruction.opcode;
 
-    uint32_t texcoordVarId;
+    DxsoRegisterValue texcoordVar;
     uint32_t samplerIdx;
 
     DxsoRegMask srcMask(true, true, true, true);
     if (m_programInfo.majorVersion() >= 2) { // SM 2.0+
-      texcoordVarId = emitRegisterLoad(ctx.src[0], srcMask).id;
-      samplerIdx = ctx.src[1].id.num;
+      texcoordVar = emitRegisterLoad(ctx.src[0], srcMask);
+      samplerIdx  = ctx.src[1].id.num;
     } else if (
       m_programInfo.majorVersion() == 1
    && m_programInfo.minorVersion() == 4) { // SM 1.4
-      texcoordVarId = emitRegisterLoad(ctx.src[0], srcMask).id;
-      samplerIdx = ctx.dst.id.num;
+      texcoordVar = emitRegisterLoad(ctx.src[0], srcMask);
+      samplerIdx  = ctx.dst.id.num;
     }
     else { // SM 1.0-1.3
       DxsoRegister texcoord;
       texcoord.id.type = DxsoRegisterType::PixelTexcoord;
       texcoord.id.num  = ctx.dst.id.num;
 
-      texcoordVarId = emitRegisterLoadRaw(texcoord, nullptr).id;
-      samplerIdx = ctx.dst.id.num;
+      texcoordVar = emitRegisterLoadRaw(texcoord, nullptr);
+      samplerIdx  = ctx.dst.id.num;
     }
 
     DxsoSampler sampler = m_samplers.at(samplerIdx);
@@ -2145,7 +2176,7 @@ void DxsoCompiler::emitControlFlowGenericLoop(
       sampler = m_samplers.at(samplerIdx);
     }
 
-    auto SampleImage = [this, opcode, dst, texcoordVarId, ctx](DxsoSamplerInfo& sampler, bool depth) {
+    auto SampleImage = [this, opcode, dst, ctx](DxsoRegisterValue texcoordVar, DxsoSamplerInfo& sampler, bool depth) {
       DxsoRegisterValue result;
       result.type.ctype  = dst.type.ctype;
       result.type.ccount = depth ? 1 : 4;
@@ -2163,7 +2194,7 @@ void DxsoCompiler::emitControlFlowGenericLoop(
       if (opcode == DxsoOpcode::TexLdl) {
         uint32_t w = 3;
         imageOperands.sLod = m_module.opCompositeExtract(
-          m_module.defFloatType(32), texcoordVarId, 1, &w);
+          m_module.defFloatType(32), texcoordVar.id, 1, &w);
         imageOperands.flags |= spv::ImageOperandsLodMask;
       }
 
@@ -2174,17 +2205,19 @@ void DxsoCompiler::emitControlFlowGenericLoop(
         imageOperands.sGradY = emitRegisterLoad(ctx.src[3], gradMask).id;
       }
 
-      bool project = false;
+      uint32_t projDivider = 0;
 
       if (opcode == DxsoOpcode::Tex
         && m_programInfo.majorVersion() >= 2) {
         if (ctx.instruction.specificData.texld == DxsoTexLdMode::Project) {
-          project = true;
+          uint32_t w = 3;
+          projDivider = m_module.opCompositeExtract(
+            m_module.defFloatType(32), texcoordVar.id, 1, &w);
         }
         else if (ctx.instruction.specificData.texld == DxsoTexLdMode::Bias) {
           uint32_t w = 3;
           imageOperands.sLodBias = m_module.opCompositeExtract(
-            m_module.defFloatType(32), texcoordVarId, 1, &w);
+            m_module.defFloatType(32), texcoordVar.id, 1, &w);
           imageOperands.flags |= spv::ImageOperandsBiasMask;
         }
       }
@@ -2192,20 +2225,31 @@ void DxsoCompiler::emitControlFlowGenericLoop(
       uint32_t reference = 0;
 
       if (depth) {
-        uint32_t z = 2;
+        uint32_t component = sampler.dimensions;
         reference = m_module.opCompositeExtract(
-          m_module.defFloatType(32), texcoordVarId, 1, &z);
+          m_module.defFloatType(32), texcoordVar.id, 1, &component);
+      }
+
+      if (projDivider != 0) {
+        texcoordVar.id = m_module.opCompositeInsert(getVectorTypeId(texcoordVar.type),
+          projDivider, texcoordVar.id, 1, &sampler.dimensions);
+
+        uint32_t w = 3;
+        if (sampler.dimensions != w) {
+          texcoordVar.id = m_module.opCompositeInsert(getVectorTypeId(texcoordVar.type),
+            projDivider, texcoordVar.id, 1, &w);
+        }
       }
 
       result.id = m_module.sampleGeneric(
-        project,
+        projDivider != 0,
         typeId,
         imageVarId,
-        texcoordVarId,
+        texcoordVar.id,
         reference,
         imageOperands);
 
-      this->emitDstStore(dst, result, ctx.dst.mask, ctx.dst.saturate);
+      this->emitDstStore(dst, result, ctx.dst.mask, ctx.dst.saturate, ctx.dst.shift);
     };
 
     uint32_t colorLabel  = m_module.allocateId();
@@ -2216,11 +2260,11 @@ void DxsoCompiler::emitControlFlowGenericLoop(
     m_module.opBranchConditional(sampler.depthSpecConst, depthLabel, colorLabel);
 
     m_module.opLabel(colorLabel);
-    SampleImage(sampler.color, false);
+    SampleImage(texcoordVar, sampler.color, false);
     m_module.opBranch(endLabel);
 
     m_module.opLabel(depthLabel);
-    SampleImage(sampler.depth, true);
+    SampleImage(texcoordVar, sampler.depth, true);
     m_module.opBranch(endLabel);
 
     m_module.opLabel(endLabel);
@@ -2412,6 +2456,8 @@ void DxsoCompiler::emitControlFlowGenericLoop(
 
       DxsoRegMask mask = elem.mask;
 
+      bool scalar = false;
+
       if (builtIn == spv::BuiltInMax) {
         outputPtr.id = emitNewVariableDefault(info,
           m_module.constvec4f32(0.0f, 0.0f, 0.0f, 0.0f));
@@ -2443,8 +2489,10 @@ void DxsoCompiler::emitControlFlowGenericLoop(
 
         if (builtIn == spv::BuiltInPosition)
           m_vs.oPos = outputPtr;
-        else if (builtIn == spv::BuiltInPointSize)
+        else if (builtIn == spv::BuiltInPointSize) {
+          scalar = true;
           m_vs.oPSize = outputPtr;
+        }
       }
 
       m_entryPointInterfaces.push_back(outputPtr.id);
@@ -2462,22 +2510,32 @@ void DxsoCompiler::emitControlFlowGenericLoop(
       DxsoRegisterValue indexVal = this->emitValueLoad(indexPtr);
 
       DxsoRegisterValue workingReg;
-      workingReg.type = indexVal.type;
+      workingReg.type.ctype  = indexVal.type.ctype;
+      workingReg.type.ccount = scalar ? 1 : 4;
 
-      workingReg.id = m_module.constvec4f32(0.0f, 0.0f, 0.0f, 0.0f);
-
-      if (mask.popCount() == 0)
-        mask = DxsoRegMask(true, true, true, true);
+      workingReg.id = scalar
+        ? m_module.constf32(0.0f)
+        : m_module.constvec4f32(0.0f, 0.0f, 0.0f, 0.0f);
 
       std::array<uint32_t, 4> indices = { 0, 1, 2, 3 };
-      uint32_t count = 0;
-      for (uint32_t i = 0; i < 4; i++) {
-        if (mask[i])
-          indices[count++] = i + 4;
-      }
 
-      workingReg.id = m_module.opVectorShuffle(getVectorTypeId(workingReg.type),
-        workingReg.id, indexVal.id, 4, indices.data());
+      if (scalar) {
+        workingReg.id = m_module.opCompositeExtract(getVectorTypeId(workingReg.type),
+          indexVal.id, 1, indices.data());
+      } else {
+        if (mask.popCount() == 0)
+          mask = DxsoRegMask(true, true, true, true);
+
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < 4; i++) {
+          if (mask[i])
+            indices[count++] = i + 4;
+        }
+
+
+        workingReg.id = m_module.opVectorShuffle(getVectorTypeId(workingReg.type),
+          workingReg.id, indexVal.id, 4, indices.data());
+      }
 
       m_module.opStore(outputPtr.id, workingReg.id);
     }
@@ -2605,10 +2663,10 @@ void DxsoCompiler::emitControlFlowGenericLoop(
     uint32_t alphaFuncId = m_module.specConst32(m_module.defIntType(32, 0), uint32_t(VK_COMPARE_OP_ALWAYS));
     
     m_module.setDebugName   (alphaTestId, "alpha_test");
-    m_module.decorateSpecId (alphaTestId, uint32_t(DxvkSpecConstantId::AlphaTestEnable));
+    m_module.decorateSpecId (alphaTestId, getSpecId(D3D9SpecConstantId::AlphaTestEnable));
     
     m_module.setDebugName   (alphaFuncId, "alpha_func");
-    m_module.decorateSpecId (alphaFuncId, uint32_t(DxvkSpecConstantId::AlphaCompareOp));
+    m_module.decorateSpecId (alphaFuncId, getSpecId(D3D9SpecConstantId::AlphaCompareOp));
     
     // Implement alpha test
     DxsoRegister color0;

@@ -27,14 +27,19 @@ namespace dxvk {
     /// Set the max shader model the device can support in the caps.
     int32_t shaderModel;
 
-    /// Whather or not to disregard evicting managed textures when an application tells us to.
-    bool trustEvictions;
-
     /// Whether or not managed resources should stay in memory until unlock, or until manually evicted.
     bool evictManagedOnUnlock;
 
     /// Whether or not to set the process as DPI aware in Windows when the API interface is created.
     bool dpiAware;
+
+    /// True:  Copy our constant set into UBO if we are relative indexing ever.
+    /// False: Copy our constant set into UBO if we are relative indexing at the start of a defined constant
+    /// Why?:  In theory, FXC should never generate code where this would be an issue.
+    bool strictConstantCopies;
+
+    /// Whether or not we should care about pow(0, 0) = 1
+    bool strictPow;
   };
 
 }

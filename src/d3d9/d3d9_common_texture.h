@@ -53,6 +53,8 @@ namespace dxvk {
             Rc<DxvkImageView>       ImageViewSrgb,
       const D3D9TextureDesc*        pDesc);
 
+    ~D3D9CommonTexture();
+
     /**
      * \brief Texture properties
      *
@@ -79,6 +81,8 @@ namespace dxvk {
     Rc<DxvkImage> GetImage() const {
       return m_image;
     }
+
+    Rc<DxvkImage> GetResolveImage();
 
     /**
      * \brief Computes subresource from the subresource index
@@ -150,16 +154,24 @@ namespace dxvk {
             UINT Face,
             UINT MipLevel);
 
+    Rc<DxvkImageView> GetMipGenView() const {
+      return m_mipGenView;
+    }
+
     Rc<DxvkImageView> GetImageView(bool srgb) const {
       return srgb ? m_imageViewSrgb : m_imageView;
     }
 
-    Rc<DxvkImageView> GetRenderTargetView(bool srgb) const {
-      return srgb ? m_renderTargetViewSrgb : m_renderTargetView;
+    Rc<DxvkImageView> GetImageViewLayer(uint32_t face, bool srgb) const {
+      return srgb ? m_imageViewSrgbFaces[face] : m_imageViewFaces[face];
     }
 
-    Rc<DxvkImageView> GetDepthStencilView() const {
-      return m_depthStencilView;
+    Rc<DxvkImageView> GetRenderTargetView(uint32_t face, bool srgb) const {
+      return srgb ? m_renderTargetViewSrgb[face] : m_renderTargetView[face];
+    }
+
+    Rc<DxvkImageView> GetDepthStencilView(uint32_t face) const {
+      return m_depthStencilView[face];
     }
 
     bool RequiresFixup() const {
@@ -184,31 +196,22 @@ namespace dxvk {
         m_device->GenerateMips(this);
     }
 
-    void Evict() {
-      this->DeallocFixupBuffers();
-      this->DeallocMappingBuffers();
-      
-      for (uint32_t i = 0; i < 6; i++)
-        m_evictedSubresources[i] = 0xffff;
-    }
-
     VkImageViewType GetImageViewType() const;
 
-    void RecreateImageView(UINT Lod);
-    void CreateDepthStencilView();
-    void CreateRenderTargetView();
+    void RecreateImageViews(UINT Lod);
+    void CreateDepthStencilViews();
+    void CreateRenderTargetViews();
 
     VkImageLayout GetDepthLayout() const {
-      return m_depthStencilView->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL
+      return (m_depthStencilView[0] != nullptr
+           && m_depthStencilView[0]->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL)
         ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         : VK_IMAGE_LAYOUT_GENERAL;
     }
 
     VkImageLayout GetRenderTargetLayout() const {
-      if (GetRenderTargetView(false) == nullptr)
-        return VK_IMAGE_LAYOUT_GENERAL;
-
-      return GetRenderTargetView(false)->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL
+      return (m_renderTargetView[0] != nullptr
+           && m_renderTargetView[0]->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL)
         ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
         : VK_IMAGE_LAYOUT_GENERAL;
     }
@@ -247,14 +250,6 @@ namespace dxvk {
       }
 
       return false;
-    }
-
-    bool UnevictSubresource(UINT Face, UINT MipLevel) {
-      const uint16_t mipBit = 1u << MipLevel;
-
-      bool shouldUnevict = (m_evictedSubresources[Face] & mipBit) != 0;
-      m_evictedSubresources[Face] &= ~mipBit;
-      return shouldUnevict;
     }
 
     std::array<uint16_t, 6> DiscardSubresourceMasking() {
@@ -302,29 +297,39 @@ namespace dxvk {
 
     Rc<DxvkImage>   m_image;
 
+    Rc<DxvkImage>   m_resolveImage;
+
     std::vector<Rc<DxvkBuffer>>       m_mappingBuffers;
     std::vector<Rc<DxvkBuffer>>       m_fixupBuffers;
 
     Rc<DxvkImageView>                 m_imageView;
     Rc<DxvkImageView>                 m_imageViewSrgb;
 
-    Rc<DxvkImageView>                 m_renderTargetView;
-    Rc<DxvkImageView>                 m_renderTargetViewSrgb;
+    std::array<Rc<DxvkImageView>, 6>  m_imageViewFaces;
+    std::array<Rc<DxvkImageView>, 6>  m_imageViewSrgbFaces;
 
-    Rc<DxvkImageView>                 m_depthStencilView;
+    Rc<DxvkImageView>                 m_mipGenView;
+
+    std::array<Rc<DxvkImageView>, 6>  m_renderTargetView;
+    std::array<Rc<DxvkImageView>, 6>  m_renderTargetViewSrgb;
+
+    std::array<Rc<DxvkImageView>, 6>  m_depthStencilView;
 
     std::array<uint16_t, 6>           m_mappedSubresources   = { 0 };
     std::array<uint16_t, 6>           m_unmappedSubresources = { 0 };
     std::array<uint16_t, 6>           m_readOnlySubresources = { 0 };
-    std::array<uint16_t, 6>           m_evictedSubresources  = { 0 };
 
     bool                              m_shadow               = false;
+
+    int64_t                           m_size                 = 0;
 
     BOOL CheckImageSupport(
       const DxvkImageCreateInfo*  pImageInfo,
       VkImageTiling         Tiling) const;
 
     BOOL CalcShadowState() const;
+
+    int64_t CalcMemoryConsumption() const;
 
     BOOL CheckFormatFeatureSupport(
       VkFormat              Format,
@@ -348,6 +353,7 @@ namespace dxvk {
       VkImageUsageFlags         Usage);
 
     Rc<DxvkImageView> CreateView(
+      int32_t           Index,
       VkImageUsageFlags UsageFlags,
       bool              srgb,
       UINT              Lod);

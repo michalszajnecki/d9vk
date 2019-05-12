@@ -228,8 +228,6 @@ namespace dxvk {
     m_loState.enableLogicOp = VK_FALSE;
     m_loState.logicOp = VK_LOGIC_OP_NO_OP;
 
-    m_xsState.alphaCompareOp = VK_COMPARE_OP_ALWAYS;
-
     m_blendMode.enableBlending = VK_FALSE;
     m_blendMode.colorSrcFactor = VK_BLEND_FACTOR_ONE;
     m_blendMode.colorDstFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -396,7 +394,6 @@ namespace dxvk {
       m_context->setMultisampleState(m_msState);
       m_context->setDepthStencilState(m_dsState);
       m_context->setLogicOpState(m_loState);
-      m_context->setExtraState(m_xsState);
       m_context->setBlendMode(0, m_blendMode);
 
       m_context->setInputAssemblyState(m_iaState);
@@ -436,7 +433,7 @@ namespace dxvk {
     switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
     case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
-    default: return format; // TODO: make this srgb-ness more correct.
+    default: return format;
     }
   }
 

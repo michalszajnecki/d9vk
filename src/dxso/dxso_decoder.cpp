@@ -94,6 +94,7 @@ namespace dxvk {
     reg.hasRelative = (token & (1 << 13)) == 8192;
     reg.relative.id = DxsoRegisterId {
       DxsoRegisterType::Addr, 0 };
+    reg.relative.swizzle = IdentitySwizzle;
 
     reg.centroid         = token & (4 << 20);
     reg.partialPrecision = token & (2 << 20);
@@ -117,6 +118,9 @@ namespace dxvk {
       uint8_t((token & 0x000f0000) >> 16));
 
     m_ctx.dst.saturate = (token & (1 << 20)) != 0;
+
+    m_ctx.dst.shift    = (token & 0x0f000000) >> 24;
+    m_ctx.dst.shift    = (m_ctx.dst.shift & 0x7) - (m_ctx.dst.shift & 0x8);
 
     const bool extraToken =
       relativeAddressingUsesToken(DxsoInstructionArgumentType::Destination);
