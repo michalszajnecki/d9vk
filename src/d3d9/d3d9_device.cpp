@@ -2907,6 +2907,7 @@ namespace dxvk {
 
     if (pPresentationParameters->EnableAutoDepthStencil) {
       Com<IDirect3DSurface9> autoDepthStencil;
+
       CreateDepthStencilSurface(
         pPresentationParameters->BackBufferWidth,
         pPresentationParameters->BackBufferHeight,
@@ -2917,7 +2918,9 @@ namespace dxvk {
         &autoDepthStencil,
         nullptr);
 
-      SetDepthStencilSurface(autoDepthStencil.ptr());
+      m_autoDepthStencil = autoDepthStencil;
+
+      SetDepthStencilSurface(m_autoDepthStencil.ptr());
     }
 
     ShowCursor(FALSE);
