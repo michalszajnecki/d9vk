@@ -45,6 +45,7 @@ namespace dxvk {
     DirtyRenderStateBuffer,
     DirtyInputLayout,
     DirtyViewportScissor,
+    DirtyMultiSampleState,
     UpDirtiedVertices,
     UpDirtiedIndices,
     ValidSampleMask,
@@ -618,6 +619,10 @@ namespace dxvk {
 
     HWND GetWindow();
 
+    void FlushCursor() {
+      return m_cursor.FlushCursor();
+    }
+
     Rc<DxvkDevice> GetDXVKDevice() {
       return m_dxvkDevice;
     }
@@ -702,6 +707,12 @@ namespace dxvk {
     void BindFramebuffer();
 
     void BindViewportAndScissor();
+
+    inline bool IsAlphaToCoverageEnabled() {
+      const bool alphaTest = m_state.renderStates[D3DRS_ALPHATESTENABLE] != 0;
+
+      return m_amdATOC || (m_nvATOC && alphaTest);
+    }
 
     void BindMultiSampleState();
     
@@ -881,6 +892,9 @@ namespace dxvk {
 
     std::atomic<bool>               m_failedAlloc     = false;
     std::atomic<int64_t>            m_availableMemory = 0;
+
+    bool                            m_amdATOC         = false;
+    bool                            m_nvATOC          = false;
 
     void AllocUpBuffer(uint32_t size);
 
