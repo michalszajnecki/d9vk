@@ -214,6 +214,9 @@ namespace dxvk {
       Logger::err("D3D11: Cannot map a device-local image");
       return E_INVALIDARG;
     }
+
+    if (unlikely(Subresource >= pTexture->CountSubresources()))
+      return E_INVALIDARG;
     
     VkFormat packedFormat = m_parent->LookupPackedFormat(
       pTexture->Desc()->Format, pTexture->GetFormatMode()).Format;
@@ -320,7 +323,7 @@ namespace dxvk {
   }
   
   
-  void STDMETHODCALLTYPE D3D11DeferredContext::EmitCsChunk(DxvkCsChunkRef&& chunk) {
+  void D3D11DeferredContext::EmitCsChunk(DxvkCsChunkRef&& chunk) {
     m_commandList->AddChunk(std::move(chunk));
   }
 

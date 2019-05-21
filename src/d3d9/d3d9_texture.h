@@ -7,16 +7,16 @@
 #include <vector>
 #include <list>
 #include <mutex>
+#include <new>
 
 namespace dxvk {
-
-  extern std::mutex g_managedTextureMutex;
-  extern std::list<IDirect3DBaseTexture9*> g_managedTextures;
 
   template <typename SubresourceType, typename... Base>
   class D3D9BaseTexture : public D3D9Resource<Base...> {
 
   public:
+
+    struct alignas(16) SubresourceData { uint8_t data[sizeof(SubresourceType)]; };
 
     D3D9BaseTexture(
             D3D9DeviceEx*           pDevice,
@@ -28,30 +28,23 @@ namespace dxvk {
       const uint32_t arraySlices = m_texture.GetLayerCount();
       const uint32_t mipLevels   = m_texture.GetMipCount();
 
-      m_subresources.resize(
-        m_texture.GetSubresourceCount());
+      m_subresources.resize(arraySlices * mipLevels);
 
       for (uint32_t i = 0; i < arraySlices; i++) {
         for (uint32_t j = 0; j < mipLevels; j++) {
+          const uint32_t subresource = m_texture.CalcSubresource(i, j);
 
-          uint32_t subresource = m_texture.CalcSubresource(i, j);
+          SubresourceType* subObj = this->GetSubresource(subresource);
 
-          SubresourceType* subObj = new SubresourceType(
+          new (subObj) SubresourceType(
             pDevice,
             &m_texture,
-            i,
-            j,
+            i, j,
             this);
-          subObj->AddRefPrivate();
 
-          m_subresources[subresource] = subObj;
+          subObj->AddRefPrivate();
         }
       }
-    }
-
-    ~D3D9BaseTexture() {
-      for (auto* subresource : m_subresources)
-        subresource->ReleasePrivate();
     }
 
     DWORD STDMETHODCALLTYPE SetLOD(DWORD LODNew) final {
@@ -91,10 +84,10 @@ namespace dxvk {
     }
 
     SubresourceType* GetSubresource(UINT Subresource) {
-      if (Subresource >= m_subresources.size())
+      if (unlikely(Subresource >= m_subresources.size()))
         return nullptr;
 
-      return m_subresources[Subresource];
+      return reinterpret_cast<SubresourceType*>(&m_subresources[Subresource]);
     }
 
   protected:
@@ -104,7 +97,7 @@ namespace dxvk {
     DWORD m_lod;
     D3DTEXTUREFILTERTYPE m_autogenFilter;
 
-    std::vector<SubresourceType*> m_subresources;
+    std::vector<SubresourceData> m_subresources;
 
   };
 

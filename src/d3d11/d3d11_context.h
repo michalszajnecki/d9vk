@@ -803,6 +803,10 @@ namespace dxvk {
             DxbcProgramType                   Stage,
             D3D11UnorderedAccessBindings&     Bindings);
     
+    void UpdateMappedBuffer(
+      const D3D11CommonTexture*               pTexture,
+            VkImageSubresource                Subresource);
+    
     bool ValidateRenderTargets(
             UINT                              NumViews,
             ID3D11RenderTargetView* const*    ppRenderTargetViews,
@@ -858,7 +862,7 @@ namespace dxvk {
       }
     }
     
-    virtual void STDMETHODCALLTYPE EmitCsChunk(DxvkCsChunkRef&& chunk) = 0;
+    virtual void EmitCsChunk(DxvkCsChunkRef&& chunk) = 0;
     
   };
   

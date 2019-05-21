@@ -74,6 +74,14 @@ namespace dxvk {
     const D3D11_COMMON_TEXTURE_DESC* Desc() const {
       return &m_desc;
     }
+
+    /**
+     * \brief Counts number of subresources
+     * \returns Number of subresources
+     */
+    UINT CountSubresources() const {
+      return m_desc.ArraySize * m_desc.MipLevels;
+    }
     
     /**
      * \brief Map mode
@@ -81,6 +89,29 @@ namespace dxvk {
      */
     D3D11_COMMON_TEXTURE_MAP_MODE GetMapMode() const {
       return m_mapMode;
+    }
+
+    /**
+     * \brief Map type of a given subresource
+     * 
+     * \param [in] Subresource Subresource index
+     * \returns Current map mode of that subresource
+     */
+    D3D11_MAP GetMapType(UINT Subresource) const {
+      return Subresource < m_mapTypes.size()
+        ? D3D11_MAP(m_mapTypes[Subresource])
+        : D3D11_MAP(~0u);
+    }
+
+    /**
+     * \brief Sets map type for a given subresource
+     * 
+     * \param [in] Subresource The subresource
+     * \param [in] MapType The map type
+     */
+    void SetMapType(UINT Subresource, D3D11_MAP MapType) {
+      if (Subresource < m_mapTypes.size())
+        m_mapTypes[Subresource] = MapType;
     }
     
     /**
@@ -92,43 +123,29 @@ namespace dxvk {
     }
     
     /**
-     * \brief The DXVK buffer
-     * \returns The DXVK buffer
+     * \brief Mapped subresource buffer
+     * 
+     * \param [in] Subresource Subresource index
+     * \returns Mapped subresource buffer
      */
-    Rc<DxvkBuffer> GetMappedBuffer() const {
-      return m_buffer;
+    Rc<DxvkBuffer> GetMappedBuffer(UINT Subresource) const {
+      return Subresource < m_buffers.size()
+        ? m_buffers[Subresource]
+        : Rc<DxvkBuffer>();
     }
     
     /**
-     * \brief Currently mapped subresource
-     * \returns Mapped subresource
+     * \brief Checks whether we can update the mapped buffer early
+     * 
+     * For images which are mapped through a buffer and that are
+     * only used for transfer operations, we can update the mapped
+     * buffer right after performing those transfers to avoid stalls.
+     * \returns \c true if the mapped buffer can be updated early
      */
-    VkImageSubresource GetMappedSubresource() const {
-      return m_mappedSubresource;
-    }
-
-    /**
-     * \brief Current map type
-     */
-    D3D11_MAP GetMapType() const {
-      return m_mapType;
-    }
-    
-    /**
-     * \brief Sets mapped subresource
-     * \param [in] subresource THe subresource
-     */
-    void SetMappedSubresource(VkImageSubresource Subresource, D3D11_MAP MapType) {
-      m_mappedSubresource = Subresource;
-      m_mapType           = MapType;
-    }
-    
-    /**
-     * \brief Resets mapped subresource
-     * Marks the texture as not mapped.
-     */
-    void ClearMappedSubresource() {
-      m_mappedSubresource = VkImageSubresource { };
+    bool CanUpdateMappedBufferEarly() const {
+      return m_mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_BUFFER
+          && (m_desc.BindFlags & ~D3D11_BIND_SHADER_RESOURCE) == 0
+          && (m_desc.Usage == D3D11_USAGE_STAGING);
     }
     
     /**
@@ -192,14 +209,12 @@ namespace dxvk {
     D3D11_COMMON_TEXTURE_DESC     m_desc;
     D3D11_COMMON_TEXTURE_MAP_MODE m_mapMode;
     
-    Rc<DxvkImage>   m_image;
-    Rc<DxvkBuffer>  m_buffer;
+    Rc<DxvkImage>                 m_image;
+    std::vector<Rc<DxvkBuffer>>   m_buffers;
+    std::vector<D3D11_MAP>        m_mapTypes;
     
-    VkImageSubresource m_mappedSubresource
-      = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0 };
-    D3D11_MAP m_mapType = D3D11_MAP_READ;
-    
-    Rc<DxvkBuffer> CreateMappedBuffer() const;
+    Rc<DxvkBuffer> CreateMappedBuffer(
+            UINT                  MipLevel) const;
     
     BOOL CheckImageSupport(
       const DxvkImageCreateInfo*  pImageInfo,
