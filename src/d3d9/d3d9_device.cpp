@@ -352,11 +352,7 @@ namespace dxvk {
     }
     catch (const DxvkError& e) {
       Logger::err(e.message());
-
-      if (m_failedAlloc)
-        return D3DERR_OUTOFVIDEOMEMORY;
-
-      return D3DERR_INVALIDCALL;
+      return D3DERR_OUTOFVIDEOMEMORY;
     }
   }
 
@@ -401,11 +397,7 @@ namespace dxvk {
     }
     catch (const DxvkError& e) {
       Logger::err(e.message());
-
-      if (m_failedAlloc)
-        return D3DERR_OUTOFVIDEOMEMORY;
-
-      return D3DERR_INVALIDCALL; 
+      return D3DERR_OUTOFVIDEOMEMORY;
     }
   }
 
@@ -448,11 +440,7 @@ namespace dxvk {
     }
     catch (const DxvkError& e) {
       Logger::err(e.message());
-
-      if (m_failedAlloc)
-        return D3DERR_OUTOFVIDEOMEMORY;
-
-      return D3DERR_INVALIDCALL;
+      return D3DERR_OUTOFVIDEOMEMORY;
     }
   }
 
@@ -577,8 +565,8 @@ namespace dxvk {
     D3D9CommonTexture* srcTextureInfo = src->GetCommonTexture();
     D3D9CommonTexture* dstTextureInfo = dst->GetCommonTexture();
 
-    Rc<DxvkImage> srcImage = src->GetCommonTexture()->GetImage();
-    Rc<DxvkImage> dstImage = dst->GetCommonTexture()->GetImage();
+    Rc<DxvkImage> srcImage = srcTextureInfo->GetImage();
+    Rc<DxvkImage> dstImage = dstTextureInfo->GetImage();
 
     const DxvkFormatInfo* dstFormatInfo = imageFormatInfo(dstImage->info().format);
     const DxvkFormatInfo* srcFormatInfo = imageFormatInfo(srcImage->info().format);
@@ -775,8 +763,8 @@ namespace dxvk {
     D3D9CommonTexture* dstTextureInfo = dst->GetCommonTexture();
     D3D9CommonTexture* srcTextureInfo = src->GetCommonTexture();
 
-    Rc<DxvkImage> dstImage = dst->GetCommonTexture()->GetImage();
-    Rc<DxvkImage> srcImage = src->GetCommonTexture()->GetImage();
+    Rc<DxvkImage> dstImage = dstTextureInfo->GetImage();
+    Rc<DxvkImage> srcImage = srcTextureInfo->GetImage();
 
     const DxvkFormatInfo* dstFormatInfo = imageFormatInfo(dstImage->info().format);
     const DxvkFormatInfo* srcFormatInfo = imageFormatInfo(srcImage->info().format);
@@ -888,7 +876,7 @@ namespace dxvk {
     }
     else {
       if (needsBlitResolve) {
-        auto resolveSrc = src->GetCommonTexture()->GetResolveImage();
+        auto resolveSrc = srcTextureInfo->GetResolveImage();
 
         VkImageResolve region;
         region.srcSubresource = blitInfo.srcSubresource;
@@ -1358,8 +1346,9 @@ namespace dxvk {
     if (likely(changed)) {
       const bool oldATOC = IsAlphaToCoverageEnabled();
 
-      // AMD's driver hack for ATOC.
+      // AMD's driver hack for ATOC and RESZ
       if (unlikely(State == D3DRS_POINTSIZE)) {
+        // ATOC
         constexpr uint32_t AlphaToCoverageEnable  = MAKEFOURCC('A', '2', 'M', '1');
         constexpr uint32_t AlphaToCoverageDisable = MAKEFOURCC('A', '2', 'M', '0');
 
@@ -1372,6 +1361,13 @@ namespace dxvk {
           if (oldATOC != newATOC)
             m_flags.set(D3D9DeviceFlag::DirtyMultiSampleState);
 
+          return D3D_OK;
+        }
+
+        // RESZ
+        constexpr uint32_t RESZ = 0x7fa05000;
+        if (Value == RESZ) {
+          ResolveZ();
           return D3D_OK;
         }
       }
@@ -2582,11 +2578,7 @@ namespace dxvk {
     }
     catch (const DxvkError& e) {
       Logger::err(e.message());
-
-      if (m_failedAlloc)
-        return D3DERR_OUTOFVIDEOMEMORY;
-
-      return D3DERR_INVALIDCALL;
+      return D3DERR_OUTOFVIDEOMEMORY;
     }
   }
 
@@ -2629,11 +2621,7 @@ namespace dxvk {
     }
     catch (const DxvkError& e) {
       Logger::err(e.message());
-
-      if (m_failedAlloc)
-        return D3DERR_OUTOFVIDEOMEMORY;
-
-      return D3DERR_INVALIDCALL;
+      return D3DERR_OUTOFVIDEOMEMORY;
     }
   }
 
@@ -2678,11 +2666,7 @@ namespace dxvk {
     }
     catch (const DxvkError& e) {
       Logger::err(e.message());
-
-      if (m_failedAlloc)
-        return D3DERR_OUTOFVIDEOMEMORY;
-
-      return D3DERR_INVALIDCALL;
+      return D3DERR_OUTOFVIDEOMEMORY;
     }
   }
 
@@ -3628,8 +3612,10 @@ namespace dxvk {
     // Disable exceptions
     _controlfp(_MCW_EM, _MCW_EM);
 
+#ifndef _WIN64
     // Use 24 bit precision
     _controlfp(_PC_24, _MCW_PC);
+#endif
 
     // Round to nearest
     _controlfp(_RC_NEAR, _MCW_RC);
@@ -4523,5 +4509,76 @@ namespace dxvk {
 
       return D3D_OK;
     }
+
+  void D3D9DeviceEx::ResolveZ() {
+    D3D9Surface*           src = static_cast<D3D9Surface*>(m_state.depthStencil);
+    IDirect3DBaseTexture9* dst = m_state.textures[0];
+
+    if (unlikely(!src || !dst))
+      return;
+
+    D3D9CommonTexture* srcTextureInfo = GetCommonTexture(src);
+    D3D9CommonTexture* dstTextureInfo = GetCommonTexture(dst);
+
+    const D3D9TextureDesc* srcDesc = srcTextureInfo->Desc();
+    const D3D9TextureDesc* dstDesc = dstTextureInfo->Desc();
+
+    if (unlikely(dstDesc->MultiSample > D3DMULTISAMPLE_NONMASKABLE))
+      return;
+
+    const D3D9_VK_FORMAT_MAPPING srcFormatInfo = LookupFormat(srcDesc->Format);
+    const D3D9_VK_FORMAT_MAPPING dstFormatInfo = LookupFormat(dstDesc->Format);
+    
+    auto srcVulkanFormatInfo = imageFormatInfo(srcFormatInfo.Format);
+    auto dstVulkanFormatInfo = imageFormatInfo(dstFormatInfo.Format);
+    
+    const VkImageSubresource dstSubresource =
+      dstTextureInfo->GetSubresourceFromIndex(
+        dstVulkanFormatInfo->aspectMask, 0);
+    
+    const VkImageSubresource srcSubresource =
+      srcTextureInfo->GetSubresourceFromIndex(
+        srcVulkanFormatInfo->aspectMask, src->GetSubresource());
+    
+    const VkImageSubresourceLayers dstSubresourceLayers = {
+      dstSubresource.aspectMask,
+      dstSubresource.mipLevel,
+      dstSubresource.arrayLayer, 1 };
+    
+    const VkImageSubresourceLayers srcSubresourceLayers = {
+      srcSubresource.aspectMask,
+      srcSubresource.mipLevel,
+      srcSubresource.arrayLayer, 1 };
+
+    if (dstDesc->MultiSample <= D3DMULTISAMPLE_NONMASKABLE) {
+      EmitCs([
+        cDstImage  = dstTextureInfo->GetImage(),
+        cSrcImage  = srcTextureInfo->GetImage(),
+        cDstLayers = dstSubresourceLayers,
+        cSrcLayers = srcSubresourceLayers
+      ] (DxvkContext* ctx) {
+        ctx->copyImage(
+          cDstImage, cDstLayers, VkOffset3D { 0, 0, 0 },
+          cSrcImage, cSrcLayers, VkOffset3D { 0, 0, 0 },
+          cDstImage->mipLevelExtent(cDstLayers.mipLevel));
+      });
+    } else {      
+      EmitCs([
+        cDstImage  = dstTextureInfo->GetImage(),
+        cSrcImage  = srcTextureInfo->GetImage(),
+        cDstSubres = dstSubresourceLayers,
+        cSrcSubres = srcSubresourceLayers
+      ] (DxvkContext* ctx) {
+        VkImageResolve region;
+        region.srcSubresource = cSrcSubres;
+        region.srcOffset      = VkOffset3D { 0, 0, 0 };
+        region.dstSubresource = cDstSubres;
+        region.dstOffset      = VkOffset3D { 0, 0, 0 };
+        region.extent         = cDstImage->mipLevelExtent(cDstSubres.mipLevel);
+
+        ctx->resolveImage(cDstImage, cSrcImage, region, cDstImage->info().format);
+      });
+    }
+  }
 
 }

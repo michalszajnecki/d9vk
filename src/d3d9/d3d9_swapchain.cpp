@@ -25,7 +25,9 @@ namespace dxvk {
     m_presentParams = *pPresentParams;
     m_window = m_presentParams.hDeviceWindow;
 
-    CreatePresenter();
+    UpdatePresentExtent(nullptr);
+    if (!pDevice->GetOptions()->deferSurfaceCreation)
+      CreatePresenter();
 
     CreateBackBuffer();
     CreateHud();
@@ -105,6 +107,7 @@ namespace dxvk {
     recreate   |= window != m_window;    
 
     m_dirty    |= vsync != m_vsync;
+    m_dirty    |= UpdatePresentExtent(pSourceRect);
     m_dirty    |= recreate;
     m_vsync     = vsync;
     m_window    = window;
@@ -286,6 +289,7 @@ namespace dxvk {
     }
 
     m_presentParams = *pPresentParams;
+    UpdatePresentExtent(nullptr);
     CreateBackBuffer();
     return D3D_OK;
   }
@@ -410,9 +414,6 @@ namespace dxvk {
 
       // Use an appropriate texture filter depending on whether
       // the back buffer size matches the swap image size
-      bool fitSize = m_swapImage->info().extent.width  == info.imageExtent.width
-                  && m_swapImage->info().extent.height == info.imageExtent.height;
-
       m_context->bindShader(VK_SHADER_STAGE_VERTEX_BIT,   m_vertShader);
       m_context->bindShader(VK_SHADER_STAGE_FRAGMENT_BIT, m_fragShader);
 
@@ -424,8 +425,8 @@ namespace dxvk {
       VkViewport viewport;
       viewport.x        = 0.0f;
       viewport.y        = 0.0f;
-      viewport.width    = float(info.imageExtent.width);
-      viewport.height   = float(info.imageExtent.height);
+      viewport.width    = float(m_swapImage->info().extent.width);
+      viewport.height   = float(m_swapImage->info().extent.height);
       viewport.minDepth = 0.0f;
       viewport.maxDepth = 1.0f;
       
@@ -446,7 +447,7 @@ namespace dxvk {
       m_context->setInputAssemblyState(m_iaState);
       m_context->setInputLayout(0, nullptr, 0, nullptr);
 
-      m_context->bindResourceSampler(BindingIds::Image, fitSize ? m_samplerFitting : m_samplerScaling);
+      m_context->bindResourceSampler(BindingIds::Image, m_samplerFitting);
       m_context->bindResourceSampler(BindingIds::Gamma, m_gammaSampler);
 
       m_context->bindResourceView(BindingIds::Image, m_swapImageView, nullptr);
@@ -479,7 +480,7 @@ namespace dxvk {
 
   void D3D9SwapChainEx::RecreateSwapChain(BOOL Vsync) {
     vk::PresenterDesc presenterDesc;
-    presenterDesc.imageExtent     = { m_presentParams.BackBufferWidth, m_presentParams.BackBufferHeight };
+    presenterDesc.imageExtent     = m_presentExtent;
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(Vsync, presenterDesc.presentModes);
@@ -500,7 +501,7 @@ namespace dxvk {
     presenterDevice.adapter       = m_device->adapter()->handle();
 
     vk::PresenterDesc presenterDesc;
-    presenterDesc.imageExtent     = { m_presentParams.BackBufferWidth, m_presentParams.BackBufferHeight };
+    presenterDesc.imageExtent     = m_presentExtent;
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(false, presenterDesc.presentModes);
@@ -1007,10 +1008,28 @@ namespace dxvk {
       devMode.dmPelsWidth, "x", devMode.dmPelsHeight, "@",
       devMode.dmDisplayFrequency));
     
-    LONG status = ::ChangeDisplaySettingsExW(
-      monInfo.szDevice, &devMode, nullptr, CDS_FULLSCREEN, nullptr);
-    
-    return status == DISP_CHANGE_SUCCESSFUL ? D3D_OK : D3DERR_NOTAVAILABLE;
+    D3DDISPLAYMODEEX mode;
+    mode.Width            = devMode.dmPelsWidth;
+    mode.Height           = devMode.dmPelsHeight;
+    mode.RefreshRate      = devMode.dmDisplayFrequency;
+    mode.Format           = D3DFMT_X8R8G8B8; // Fix me
+    mode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+    mode.Size             = sizeof(D3DDISPLAYMODEEX);
+
+    return SetMonitorDisplayMode(GetDefaultMonitor(), &mode);
+  }
+
+  bool    D3D9SwapChainEx::UpdatePresentExtent(const RECT* pSourceRect) {
+    VkExtent2D oldExtent = m_presentExtent;
+
+    if (pSourceRect != nullptr)
+      m_presentExtent = VkExtent2D{ uint32_t(pSourceRect->right - pSourceRect->left), uint32_t(pSourceRect->bottom - pSourceRect->top) };
+    else
+      m_presentExtent = VkExtent2D{ m_presentParams.BackBufferWidth, m_presentParams.BackBufferHeight };
+
+    m_presentExtent   = VkExtent2D{ std::max(m_presentExtent.width, 1u), std::max(m_presentExtent.height, 1u) };
+
+    return m_presentExtent != oldExtent;
   }
 
 }
