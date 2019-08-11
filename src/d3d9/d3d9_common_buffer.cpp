@@ -15,6 +15,7 @@ namespace dxvk {
     m_sliceHandle = GetMapBuffer()->getSliceHandle();
   }
 
+
   HRESULT D3D9CommonBuffer::Lock(
           UINT   OffsetToLock,
           UINT   SizeToLock,
@@ -28,14 +29,25 @@ namespace dxvk {
       Flags);
   }
 
+
   HRESULT D3D9CommonBuffer::Unlock() {
     return m_parent->UnlockBuffer(this);
   }
+
 
   void D3D9CommonBuffer::GetDesc(
           D3D9_BUFFER_DESC* pDesc) {
     *pDesc = m_desc;
   }
+
+
+  HRESULT D3D9CommonBuffer::ValidateBufferProperties(const D3D9_BUFFER_DESC* pDesc) {
+    if (pDesc->Size == 0)
+      return D3DERR_INVALIDCALL;
+
+    return D3D_OK;
+  }
+
 
   Rc<DxvkBuffer> D3D9CommonBuffer::CreateBuffer() const {
     DxvkBufferCreateInfo  info;
@@ -47,9 +59,9 @@ namespace dxvk {
     VkMemoryPropertyFlags memoryFlags = 0;
 
     if (m_desc.Type == D3DRTYPE_VERTEXBUFFER) {
-      info.usage  |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-      info.stages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-      info.access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+      info.usage  |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+      info.stages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+      info.access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     }
     else if (m_desc.Type == D3DRTYPE_INDEXBUFFER) {
       info.usage  |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
@@ -78,6 +90,7 @@ namespace dxvk {
 
     return m_parent->GetDXVKDevice()->createBuffer(info, memoryFlags);
   }
+
 
   Rc<DxvkBuffer> D3D9CommonBuffer::CreateStagingBuffer() const {
     DxvkBufferCreateInfo  info;

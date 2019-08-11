@@ -7,9 +7,16 @@
 #include "../dxso/dxso_common.h"
 #include "../dxvk/dxvk_device.h"
 
+#include "../util/util_matrix.h"
+
 #include <d3dcommon.h>
 
 namespace dxvk {
+
+  struct D3D9MipFilter {
+    bool                MipsEnabled;
+    VkSamplerMipmapMode MipFilter;
+  };
 
   inline bool InvalidSampler(DWORD Sampler) {
     if (Sampler > 15 && Sampler < D3DDMAPSAMPLER)
@@ -30,9 +37,9 @@ namespace dxvk {
 
   inline std::pair<DxsoProgramType, DWORD> RemapStateSamplerShader(DWORD Sampler) {
     if (Sampler >= 17)
-      return std::make_pair(DxsoProgramType::VertexShader, Sampler - 17);
+      return std::make_pair(DxsoProgramTypes::VertexShader, Sampler - 17);
 
-    return std::make_pair(DxsoProgramType::PixelShader, Sampler);
+    return std::make_pair(DxsoProgramTypes::PixelShader, Sampler);
   }
 
   inline std::pair<DxsoProgramType, DWORD> RemapSamplerShader(DWORD Sampler) {
@@ -58,11 +65,8 @@ namespace dxvk {
 
   HRESULT DecodeMultiSampleType(
         D3DMULTISAMPLE_TYPE       MultiSample,
+        DWORD                     MultisampleQuality,
         VkSampleCountFlagBits*    pCount);
-
-  bool    ResourceBindable(
-        DWORD                     Usage,
-        D3DPOOL                   Pool);
 
   VkFormat GetPackedDepthStencilFormat(D3D9Format Format);
 
@@ -85,8 +89,8 @@ namespace dxvk {
     // Encoded in D3DCOLOR as argb
     rgba[3] = (float)((color & 0xff000000) >> 24) / 255.0f;
     rgba[0] = (float)((color & 0x00ff0000) >> 16) / 255.0f;
-    rgba[1] = (float)((color & 0x0000ff00) >> 8) / 255.0f;
-    rgba[2] = (float)((color & 0x000000ff)) / 255.0f;
+    rgba[1] = (float)((color & 0x0000ff00) >> 8)  / 255.0f;
+    rgba[2] = (float)((color & 0x000000ff))       / 255.0f;
   }
 
   inline VkFormat PickSRGB(VkFormat format, VkFormat srgbFormat, bool srgb) {
@@ -95,35 +99,67 @@ namespace dxvk {
 
   inline VkShaderStageFlagBits GetShaderStage(DxsoProgramType ProgramType) {
     switch (ProgramType) {
-      case DxsoProgramType::VertexShader:   return VK_SHADER_STAGE_VERTEX_BIT;
-      case DxsoProgramType::PixelShader:    return VK_SHADER_STAGE_FRAGMENT_BIT;
+      case DxsoProgramTypes::VertexShader:  return VK_SHADER_STAGE_VERTEX_BIT;
+      case DxsoProgramTypes::PixelShader:   return VK_SHADER_STAGE_FRAGMENT_BIT;
       default:                              return VkShaderStageFlagBits(0);
     }
   }
 
-  uint32_t VertexCount(D3DPRIMITIVETYPE type, UINT count);
-  DxvkInputAssemblyState InputAssemblyState(D3DPRIMITIVETYPE type);
+  inline uint32_t GetTransformIndex(D3DTRANSFORMSTATETYPE Type) {
+    if (Type == D3DTS_VIEW)
+      return 0;
+
+    if (Type == D3DTS_PROJECTION)
+      return 1;
+
+    if (Type >= D3DTS_TEXTURE0 && Type <= D3DTS_TEXTURE7)
+      return 2 + (Type - D3DTS_TEXTURE0);
+
+    return 10 + (Type - D3DTS_WORLD);
+  }
+
+  inline Matrix4 ConvertMatrix(const D3DMATRIX* Matrix) {
+    if (Matrix == nullptr) // Identity.
+      return Matrix4();
+
+    return *(reinterpret_cast<const Matrix4*>(Matrix));
+  }
+
+  uint32_t GetVertexCount(D3DPRIMITIVETYPE type, UINT count);
+
+  DxvkInputAssemblyState DecodeInputAssemblyState(D3DPRIMITIVETYPE type);
 
   VkBlendFactor DecodeBlendFactor(D3DBLEND BlendFactor, bool IsAlpha);
+
   VkBlendOp DecodeBlendOp(D3DBLENDOP BlendOp);
 
   VkFilter DecodeFilter(D3DTEXTUREFILTERTYPE Filter);
 
-  struct D3D9MipFilter {
-    bool                MipsEnabled;
-    VkSamplerMipmapMode MipFilter;
-  };
-
   D3D9MipFilter DecodeMipFilter(D3DTEXTUREFILTERTYPE Filter);
+
   bool IsAnisotropic(D3DTEXTUREFILTERTYPE Filter);
+
   VkSamplerAddressMode DecodeAddressMode(D3DTEXTUREADDRESS Mode);
+
   VkCompareOp DecodeCompareOp(D3DCMPFUNC Func);
+
   VkStencilOp DecodeStencilOp(D3DSTENCILOP Op);
+
   VkCullModeFlags DecodeCullMode(D3DCULL Mode);
+
   VkPolygonMode DecodeFillMode(D3DFILLMODE Mode);
+
   VkIndexType DecodeIndexType(D3D9Format Format);
 
-  uint32_t DecltypeSize(D3DDECLTYPE Type);
+  VkFormat DecodeDecltype(D3DDECLTYPE Type);
+
+  uint32_t GetDecltypeSize(D3DDECLTYPE Type);
+
+  void ConvertBox(D3DBOX box, VkOffset3D& offset, VkExtent3D& extent);
+
+  void ConvertRect(RECT rect, VkOffset3D& offset, VkExtent3D& extent);
+
+  void ConvertRect(RECT rect, VkOffset2D& offset, VkExtent2D& extent);
 
   template<typename T>
   UINT CompactSparseList(T* pData, UINT Mask) {
@@ -136,6 +172,12 @@ namespace dxvk {
     }
 
     return count;
+  }
+
+  bool IsDepthFormat(D3D9Format Format);
+
+  inline bool IsPoolManaged(D3DPOOL Pool) {
+    return Pool == D3DPOOL_MANAGED || Pool == D3DPOOL_MANAGED_EX;
   }
 
 }

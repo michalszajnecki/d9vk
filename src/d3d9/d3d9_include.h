@@ -35,6 +35,7 @@
 #include "../util/util_likely.h"
 #include "../util/util_math.h"
 #include "../util/util_string.h"
+#include "../util/util_misc.h"
 
 // Missed definitions in Wine/MinGW.
 
@@ -82,6 +83,11 @@ typedef struct _D3DDEVINFO_RESOURCEMANAGER
 } D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
 
 #ifndef __WINE__
-WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
+extern "C" WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
 #endif
 #endif
+
+// This is the managed pool on D3D9Ex, it's just hidden!
+#define D3DPOOL_MANAGED_EX D3DPOOL(6)
+
+using D3D9VertexElements = std::vector<D3DVERTEXELEMENT9>;

@@ -13,14 +13,18 @@ namespace dxvk {
 
     D3D9Volume(
             D3D9DeviceEx*             pDevice,
-      const D3D9TextureDesc*          pDesc);
+      const D3D9_COMMON_TEXTURE_DESC* pDesc);
 
     D3D9Volume(
             D3D9DeviceEx*             pDevice,
             D3D9CommonTexture*        pTexture,
             UINT                      Face,
             UINT                      MipLevel,
-            IUnknown*                 pContainer);
+            IDirect3DBaseTexture9*    pContainer);
+
+    void AddRefPrivate();
+
+    void ReleasePrivate();
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
 

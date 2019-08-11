@@ -32,6 +32,21 @@ namespace dxvk {
       spv::SourceLanguageUnknown, 0,
       m_module.addDebugString(fileName.c_str()),
       nullptr);
+
+    if (Logger::logLevel() <= LogLevel::Debug) {
+      if (m_isgn != nullptr) {
+        Logger::debug(str::format("Input Signature for - ", fileName.c_str(), "\n"));
+        m_isgn->printEntries();
+      }
+      if (m_osgn != nullptr) {
+        Logger::debug(str::format("Output Signature for - ", fileName.c_str(), "\n"));
+        m_osgn->printEntries();
+      }
+      if (m_psgn != nullptr) {
+        Logger::debug(str::format("Patch Constant Signature for - ", fileName.c_str(), "\n"));
+        m_psgn->printEntries();
+      }
+    }
     
     // Set the memory model. This is the same for all shaders.
     m_module.setMemoryModel(
@@ -708,6 +723,12 @@ namespace dxvk {
       if (m_moduleInfo.xfb != nullptr)
         info.sclass = spv::StorageClassPrivate;
       
+      // In geometry shaders, don't duplicate system value outputs
+      // to stay within device limits. The pixel shader will read
+      // all GS system value outputs as system value inputs.
+      if (m_programInfo.type() == DxbcProgramType::GeometryShader && sv != DxbcSystemValue::None)
+        info.sclass = spv::StorageClassPrivate;
+
       const uint32_t varId = this->emitNewVariable(info);
       m_module.setDebugName(varId, str::format("o", regIdx).c_str());
       
@@ -985,6 +1006,7 @@ namespace dxvk {
       uav.sampledTypeId = sampledTypeId;
       uav.imageTypeId   = imageTypeId;
       uav.structStride  = 0;
+      uav.structAlign   = 0;
       m_uavs.at(registerId) = uav;
     } else {
       DxbcShaderResource res;
@@ -998,6 +1020,7 @@ namespace dxvk {
       res.colorTypeId   = imageTypeId;
       res.depthTypeId   = 0;
       res.structStride  = 0;
+      res.structAlign   = 0;
       
       if ((sampledType == DxbcScalarType::Float32)
        && (resourceType == DxbcResourceDim::Texture2D
@@ -1065,12 +1088,19 @@ namespace dxvk {
       ? ins.imm[0].u32
       : 0;
     
+    uint32_t resAlign = isStructured
+      ? (resStride & -resStride)
+      : 16;
+    
     // Compute the DXVK binding slot index for the resource.
     uint32_t bindingId = isUav
       ? computeUavBinding(m_programInfo.type(), registerId)
       : computeSrvBinding(m_programInfo.type(), registerId);
     
-    if (m_moduleInfo.options.useRawSsbo) {
+    // Test whether we should use a raw SSBO for this resource
+    bool useRawSsbo = m_moduleInfo.options.minSsboAlignment <= resAlign;
+    
+    if (useRawSsbo) {
       uint32_t elemType   = getScalarTypeId(DxbcScalarType::Uint32);
       uint32_t arrayType  = m_module.defRuntimeArrayTypeUnique(elemType);
       uint32_t structType = m_module.defStructTypeUnique(1, &arrayType);
@@ -1132,6 +1162,7 @@ namespace dxvk {
       uav.sampledTypeId = sampledTypeId;
       uav.imageTypeId   = resTypeId;
       uav.structStride  = resStride;
+      uav.structAlign   = resAlign;
       m_uavs.at(registerId) = uav;
     } else {
       DxbcShaderResource res;
@@ -1145,13 +1176,14 @@ namespace dxvk {
       res.colorTypeId   = resTypeId;
       res.depthTypeId   = 0;
       res.structStride  = resStride;
+      res.structAlign   = resAlign;
       m_textures.at(registerId) = res;
     }
     
     // Store descriptor info for the shader interface
     DxvkResourceSlot resource;
     resource.slot = bindingId;
-    resource.type = m_moduleInfo.options.useRawSsbo
+    resource.type = useRawSsbo
       ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
       : (isUav
         ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER
@@ -2379,6 +2411,11 @@ namespace dxvk {
     
     m_module.opLabel(cond.labelIf);
 
+    // Only use subgroup ops on compute to avoid having to
+    // deal with helper invocations or hardware limitations
+    bool useSubgroupOps = m_moduleInfo.options.useSubgroupOpsForAtomicCounters
+      && m_programInfo.type() == DxbcProgramType::ComputeShader;
+
     // In case we have subgroup ops enabled, we need to
     // count the number of active lanes, the lane index,
     // and we need to perform the atomic op conditionally
@@ -2387,7 +2424,7 @@ namespace dxvk {
 
     DxbcConditional elect;
 
-    if (m_moduleInfo.options.useSubgroupOpsForAtomicCounters) {
+    if (useSubgroupOps) {
       m_module.enableCapability(spv::CapabilityGroupNonUniform);
       m_module.enableCapability(spv::CapabilityGroupNonUniformBallot);
 
@@ -2472,7 +2509,7 @@ namespace dxvk {
 
     // If we're using subgroup ops, we have to broadcast
     // the result of the atomic op and compute the index
-    if (m_moduleInfo.options.useSubgroupOpsForAtomicCounters) {
+    if (useSubgroupOps) {
       m_module.opBranch(elect.labelEnd);
       m_module.opLabel (elect.labelEnd);
 
@@ -2684,8 +2721,8 @@ namespace dxvk {
     //    (src0) The buffer register to query
     const DxbcBufferInfo bufferInfo = getBufferInfo(ins.src[0]);
 
-    bool isSsbo = m_moduleInfo.options.useRawSsbo
-      && bufferInfo.type != DxbcResourceType::Typed;
+    bool isSsbo = m_moduleInfo.options.minSsboAlignment <= bufferInfo.align
+               && bufferInfo.type != DxbcResourceType::Typed;
     
     // We'll store this as a scalar unsigned integer
     DxbcRegisterValue result = isSsbo
@@ -4021,9 +4058,15 @@ namespace dxvk {
       m_module.opSelectionMerge(cond.labelEnd, spv::SelectionControlMaskNone);
       m_module.opBranchConditional(zeroTest.id, cond.labelIf, cond.labelEnd);
       
-      // OpKill terminates the block
       m_module.opLabel(cond.labelIf);
-      m_module.opKill();
+
+      if (m_moduleInfo.options.useDemoteToHelperInvocation) {
+        m_module.opDemoteToHelperInvocation();
+        m_module.opBranch(cond.labelEnd);
+      } else {
+        // OpKill terminates the block
+        m_module.opKill();
+      }
       
       m_module.opLabel(cond.labelEnd);
     } else {
@@ -4826,7 +4869,7 @@ namespace dxvk {
     // For UAVs and shared memory, different methods
     // of obtaining the final pointer are used.
     bool isTgsm = operand.type == DxbcOperandType::ThreadGroupSharedMemory;
-    bool isSsbo = m_moduleInfo.options.useRawSsbo
+    bool isSsbo = m_moduleInfo.options.minSsboAlignment <= resourceInfo.align
                && resourceInfo.type != DxbcResourceType::Typed
                && !isTgsm;
     
@@ -4891,7 +4934,8 @@ namespace dxvk {
     // Shared memory is the only type of buffer that
     // is not accessed through a texel buffer view
     bool isTgsm = operand.type == DxbcOperandType::ThreadGroupSharedMemory;
-    bool isSsbo = m_moduleInfo.options.useRawSsbo && !isTgsm;
+    bool isSsbo = m_moduleInfo.options.minSsboAlignment <= bufferInfo.align
+               && !isTgsm;
     
     // Common types and IDs used while loading the data
     uint32_t bufferId = isTgsm || isSsbo ? 0 : m_module.opLoad(bufferInfo.typeId, bufferInfo.varId);
@@ -4977,7 +5021,8 @@ namespace dxvk {
     
     // Thread Group Shared Memory is not accessed through a texel buffer view
     bool isTgsm = operand.type == DxbcOperandType::ThreadGroupSharedMemory;
-    bool isSsbo = m_moduleInfo.options.useRawSsbo && !isTgsm;
+    bool isSsbo = m_moduleInfo.options.minSsboAlignment <= bufferInfo.align
+               && !isTgsm;
     
     // Perform UAV writes only if the UAV is bound and if there
     // is nothing else preventing us from writing to it.
@@ -6593,9 +6638,13 @@ namespace dxvk {
         m_module.defVoidType(), 0, nullptr));
     this->emitFunctionLabel();
 
-    // We may have to defer kill operations to the end of
-    // the shader in order to keep derivatives correct.
-    if (m_analysis->usesKill && m_analysis->usesDerivatives) {
+    if (m_analysis->usesKill && m_moduleInfo.options.useDemoteToHelperInvocation) {
+      // This extension basically implements D3D-style discard
+      m_module.enableExtension("SPV_EXT_demote_to_helper_invocation");
+      m_module.enableCapability(spv::CapabilityDemoteToHelperInvocationEXT);
+    } else if (m_analysis->usesKill && m_analysis->usesDerivatives) {
+      // We may have to defer kill operations to the end of
+      // the shader in order to keep derivatives correct.
       m_ps.killState = m_module.newVarInit(
         m_module.defPointerType(m_module.defBoolType(), spv::StorageClassPrivate),
         spv::StorageClassPrivate, m_module.constBool(false));
@@ -7298,6 +7347,7 @@ namespace dxvk {
         result.varId  = m_textures.at(registerId).varId;
         result.specId = m_textures.at(registerId).specId;
         result.stride = m_textures.at(registerId).structStride;
+        result.align  = m_textures.at(registerId).structAlign;
         return result;
       } break;
         
@@ -7310,6 +7360,7 @@ namespace dxvk {
         result.varId  = m_uavs.at(registerId).varId;
         result.specId = m_uavs.at(registerId).specId;
         result.stride = m_uavs.at(registerId).structStride;
+        result.align  = m_uavs.at(registerId).structAlign;
         return result;
       } break;
         
@@ -7324,6 +7375,7 @@ namespace dxvk {
         result.varId  = m_gRegs.at(registerId).varId;
         result.specId = 0;
         result.stride = m_gRegs.at(registerId).elementStride;
+        result.align  = 0;
         return result;
       } break;
         

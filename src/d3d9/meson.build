@@ -1,3 +1,5 @@
+d3d9_res = wrc_generator.process('version.rc')
+
 d3d9_shaders = files([
   '../dxgi/shaders/dxgi_presenter_frag.frag',
   '../dxgi/shaders/dxgi_presenter_vert.vert',
@@ -6,8 +8,8 @@ d3d9_shaders = files([
 d3d9_src = [
   'd3d9_main.cpp',
   'd3d9_interface.cpp',
+  'd3d9_adapter.cpp',
   'd3d9_monitor.cpp',
-  'd3d9_caps.cpp',
   'd3d9_device.cpp',
   'd3d9_cursor.cpp',
   'd3d9_swapchain.cpp',
@@ -26,10 +28,13 @@ d3d9_src = [
   'd3d9_stateblock.cpp',
   'd3d9_sampler.cpp',
   'd3d9_util.cpp',
-  'd3d9_initializer.cpp'
+  'd3d9_initializer.cpp',
+  'd3d9_fixed_function.cpp',
+  'd3d9_names.cpp',
+  'd3d9_swvp_emu.cpp'
 ]
 
-d3d9_dll = shared_library('d3d9'+dll_ext, d3d9_src, glsl_generator.process(d3d9_shaders),
+d3d9_dll = shared_library('d3d9'+dll_ext, d3d9_src, glsl_generator.process(d3d9_shaders), d3d9_res,
   name_prefix         : '',
   dependencies        : [ dxso_dep, dxvk_dep ],
   include_directories : dxvk_include_path,

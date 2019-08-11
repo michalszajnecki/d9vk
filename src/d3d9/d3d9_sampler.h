@@ -2,6 +2,8 @@
 
 #include "d3d9_include.h"
 
+#include "d3d9_util.h"
+
 #include "../dxvk/dxvk_hash.h"
 
 #include "../util/util_math.h"
@@ -18,7 +20,7 @@ namespace dxvk {
     DWORD MaxAnisotropy;
     float MipmapLodBias;
     DWORD MaxMipLevel;
-    D3DCOLOR BorderColor;
+    float BorderColor[4];
   };
 
   struct D3D9SamplerKeyHash {
@@ -45,15 +47,29 @@ namespace dxvk {
       key.MipmapLodBias = 0;
     }
     else {
-      // Clamp between 0.0f and 15.0f, matching limits of d3d9.
       // Games also pass NAN/INF here, this accounts for that.
-      key.MipmapLodBias = fclamp(key.MipmapLodBias, 0.0f, 15.0f);
+      if (unlikely(std::isnan(key.MipmapLodBias)))
+        key.MipmapLodBias = 0.0f;
+
+      // Clamp between -15.0f and 15.0f, matching mip limits of d3d9.
+      key.MipmapLodBias = std::clamp(key.MipmapLodBias, -15.0f, 15.0f);
+
+      // Round to the nearest .5
+      // Fixes sampler leaks in UE3 games w/ mip streaming
+      // eg. Borderlands 2
+      key.MipmapLodBias = std::round(key.MipmapLodBias * 2.0f) / 2.0f;
     }
 
-    if ( key.AddressU != D3DTADDRESS_BORDER
-      && key.AddressV != D3DTADDRESS_BORDER
-      && key.AddressW != D3DTADDRESS_BORDER)
-      key.BorderColor = 0;
+    if (key.AddressU != D3DTADDRESS_BORDER
+     && key.AddressV != D3DTADDRESS_BORDER
+     && key.AddressW != D3DTADDRESS_BORDER) {
+      for (auto& val : key.BorderColor)
+        val = 0.0f;
+    }
+    else {
+      for (auto& val : key.BorderColor)
+        val = val >= 0.5f ? 1.0f : 0.0f;
+    }
   }
 
 }

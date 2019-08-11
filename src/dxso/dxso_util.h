@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "dxso_common.h"
+#include "dxso_decoder.h"
 
 namespace dxvk {
 
@@ -19,19 +20,18 @@ namespace dxvk {
     VSCount,
 
     PSConstantBuffer = 0,
-    PSRenderStates   = 1,
-    PSFixedFunction  = 2,
+    PSFixedFunction  = 1,
+    PSShared         = 2,
     PSCount
   };
-
-  constexpr size_t DxsoMaxTempRegs      = 32;
-  constexpr size_t DxsoMaxTextureRegs   = 10;
-  constexpr size_t DxsoMaxInterfaceRegs = 16;
-  constexpr size_t DxsoMaxOperandCount  = 8;
 
   uint32_t computeResourceSlotId(
           DxsoProgramType shaderStage,
           DxsoBindingType bindingType,
           uint32_t        bindingIndex);
+
+  uint32_t getSWVPBufferSlot();
+
+  uint32_t RegisterLinkerSlot(DxsoSemantic semantic);
 
 }

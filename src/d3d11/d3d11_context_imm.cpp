@@ -60,22 +60,17 @@ namespace dxvk {
           void*                             pData,
           UINT                              DataSize,
           UINT                              GetDataFlags) {
-    if (!pAsync)
+    if (!pAsync || (DataSize && !pData))
       return E_INVALIDARG;
     
-    // Make sure that we can safely write to the memory
-    // location pointed to by pData if it is specified.
-    if (DataSize == 0)
-      pData = nullptr;
-    
-    if (pData && pAsync->GetDataSize() != DataSize) {
-      Logger::err(str::format(
-        "D3D11: GetData: Data size mismatch",
-        "\n  Expected: ", pAsync->GetDataSize(),
-        "\n  Got:      ", DataSize));
+    // Check whether the data size is actually correct
+    if (DataSize && DataSize != pAsync->GetDataSize())
       return E_INVALIDARG;
-    }
     
+    // Passing a non-null pData is actually allowed if
+    // DataSize is 0, but we should ignore that pointer
+    pData = DataSize ? pData : nullptr;
+
     // Ensure that all query commands actually get
     // executed before trying to access the query
     SynchronizeCsThread();
@@ -85,9 +80,15 @@ namespace dxvk {
     HRESULT hr = query->GetData(pData, GetDataFlags);
     
     // If we're likely going to spin on the asynchronous object,
-    // flush the context so that we're keeping the GPU busy
+    // flush the context so that we're keeping the GPU busy.
     if (hr == S_FALSE) {
-      query->NotifyStall();
+      // Don't mark the event query as stalling if the app does
+      // not intend to spin on it. This reduces flushes on End.
+      if (!(GetDataFlags & D3D11_ASYNC_GETDATA_DONOTFLUSH))
+        query->NotifyStall();
+
+      // Ignore the DONOTFLUSH flag here as some games will spin
+      // on queries without ever flushing the context otherwise.
       FlushImplicit(FALSE);
     }
     
@@ -113,7 +114,7 @@ namespace dxvk {
     
     D3D10DeviceLock lock = LockContext();
     
-    if (m_csIsBusy || m_csChunk->commandCount() != 0) {
+    if (m_csIsBusy || !m_csChunk->empty()) {
       // Add commands to flush the threaded
       // context, then flush the command list
       EmitCs([] (DxvkContext* ctx) {
@@ -196,11 +197,8 @@ namespace dxvk {
         pMappedResource);
     }
 
-    if (unlikely(FAILED(hr))) {
-      pMappedResource->pData      = nullptr;
-      pMappedResource->RowPitch   = 0;
-      pMappedResource->DepthPitch = 0;
-    }
+    if (unlikely(FAILED(hr)))
+      *pMappedResource = D3D11_MAPPED_SUBRESOURCE();
 
     return hr;
   }
@@ -341,6 +339,9 @@ namespace dxvk {
 
     if (unlikely(Subresource >= pResource->CountSubresources()))
       return E_INVALIDARG;
+
+    if (unlikely(pResource->GetMapType(Subresource) != D3D11_MAP(~0u)))
+      return E_OUTOFMEMORY;
 
     pResource->SetMapType(Subresource, MapType);
 
@@ -495,7 +496,8 @@ namespace dxvk {
     // recorded prior to this function will be run
     FlushCsChunk();
     
-    m_csThread.synchronize();
+    if (m_csThread.isBusy())
+      m_csThread.synchronize();
   }
   
   

@@ -224,6 +224,14 @@ namespace dxvk {
     }
 
     /**
+     * \brief Changes image layout
+     * \param [in] layout New layout
+     */
+    void setLayout(VkImageLayout layout) {
+      m_info.layout = layout;
+    }
+
+    /**
      * \brief Checks whether a subresource is entirely covered
      * 
      * This can be used to determine whether an image can or
@@ -251,6 +259,15 @@ namespace dxvk {
       for (uint32_t i = 0; i < m_viewFormats.size() && !result; i++)
         result |= m_viewFormats[i] == format;
       return result;
+    }
+
+    /**
+     * \brief Memory size
+     * 
+     * \returns The memory size of the image
+     */
+    VkDeviceSize memSize() const {
+      return m_memory.length();
     }
     
   private:
@@ -301,6 +318,8 @@ namespace dxvk {
      * \returns The image view handle
      */
     VkImageView handle(VkImageViewType viewType) const {
+      if (unlikely(viewType == VK_IMAGE_VIEW_TYPE_MAX_ENUM))
+        viewType = m_info.type;
       return m_views[viewType];
     }
     
@@ -340,19 +359,19 @@ namespace dxvk {
     }
     
     /**
-     * \brief Image format info
-     * \returns Image format info
-     */
-    const DxvkFormatInfo* formatInfo() const {
-      return m_image->formatInfo();
-    }
-    
-    /**
      * \brief Image object
      * \returns Image object
      */
     const Rc<DxvkImage>& image() const {
       return m_image;
+    }
+    
+    /**
+     * \brief View format info
+     * \returns View format info
+     */
+    const DxvkFormatInfo* formatInfo() const {
+      return imageFormatInfo(m_info.format);
     }
     
     /**

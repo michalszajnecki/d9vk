@@ -5,7 +5,6 @@
 #include "dxvk_cmdlist.h"
 #include "dxvk_context_state.h"
 #include "dxvk_data.h"
-#include "dxvk_event.h"
 #include "dxvk_gpu_event.h"
 #include "dxvk_gpu_query.h"
 #include "dxvk_meta_clear.h"
@@ -211,6 +210,18 @@ namespace dxvk {
       const Rc<DxvkImage>&        srcImage,
       const VkImageBlit&          region,
             VkFilter              filter);
+    
+    /**
+     * \brief Changes image layout
+     * 
+     * Permanently changes the layout for a given
+     * image. Immediately performs the transition.
+     * \param [in] image The image to transition
+     * \param [in] layout New image layout
+     */
+    void changeImageLayout(
+      const Rc<DxvkImage>&        image,
+            VkImageLayout         layout);
     
     /**
      * \brief Clears a buffer with a fixed value
@@ -761,6 +772,34 @@ namespace dxvk {
             VkFormat                  format);
     
     /**
+     * \brief Uses transfer queue to initialize buffer
+     * 
+     * Only safe to use if the buffer is not in use by the GPU.
+     * \param [in] buffer The buffer to initialize
+     * \param [in] data The data to copy to the buffer
+     */
+    void uploadBuffer(
+      const Rc<DxvkBuffer>&           buffer,
+      const void*                     data);
+    
+    /**
+     * \brief Uses transfer queue to initialize image
+     * 
+     * Only safe to use if the image is not in use by the GPU.
+     * \param [in] image The image to initialize
+     * \param [in] subresources Subresources to initialize
+     * \param [in] data Source data
+     * \param [in] pitchPerRow Row pitch of the source data
+     * \param [in] pitchPerLayer Layer pitch of the source data
+     */
+    void uploadImage(
+      const Rc<DxvkImage>&            image,
+      const VkImageSubresourceLayers& subresources,
+      const void*                     data,
+            VkDeviceSize              pitchPerRow,
+            VkDeviceSize              pitchPerLayer);
+    
+    /**
      * \brief Sets viewports
      * 
      * \param [in] viewportCount Number of viewports
@@ -910,13 +949,6 @@ namespace dxvk {
             DxvkBarrierControlFlags control);
     
     /**
-     * \brief Signals an event
-     * \param [in] event The event
-     */
-    void signalEvent(
-      const DxvkEventRevision&  event);
-    
-    /**
      * \brief Signals a GPU event
      * \param [in] event The event
      */
@@ -942,6 +974,26 @@ namespace dxvk {
     void writeTimestamp(
       const Rc<DxvkGpuQuery>&   query);
     
+    /**
+     * \brief Queues a signal
+     * 
+     * The signal will be notified after all
+     * previously submitted commands have
+     * finished execution on the GPU.
+     * \param [in] signal The signal
+     */
+    void queueSignal(
+      const Rc<sync::Signal>&   signal);
+    
+    /**
+     * \brief Trims staging buffers
+     * 
+     * Releases staging buffer resources. Calling
+     * this may be useful if data updates on a
+     * given context are rare.
+     */
+    void trimStagingBuffers();
+    
   private:
     
     const Rc<DxvkDevice>              m_device;
@@ -959,18 +1011,24 @@ namespace dxvk {
     DxvkContextFlags        m_flags;
     DxvkContextState        m_state;
 
-    DxvkBarrierSet          m_barriers;
-    DxvkBarrierSet          m_transfers;
-    DxvkBarrierSet          m_transitions;
+    DxvkBarrierSet          m_sdmaAcquires;
+    DxvkBarrierSet          m_sdmaBarriers;
+    DxvkBarrierSet          m_initBarriers;
+    DxvkBarrierSet          m_execAcquires;
+    DxvkBarrierSet          m_execBarriers;
     DxvkBarrierControlFlags m_barrierControl;
     
     DxvkGpuQueryManager     m_queryManager;
+    DxvkStagingDataAlloc    m_staging;
     
     VkPipeline m_gpActivePipeline = VK_NULL_HANDLE;
     VkPipeline m_cpActivePipeline = VK_NULL_HANDLE;
 
     VkDescriptorSet m_gpSet = VK_NULL_HANDLE;
     VkDescriptorSet m_cpSet = VK_NULL_HANDLE;
+
+    DxvkBindingSet<MaxNumVertexBindings + 1>  m_vbTracked;
+    DxvkBindingSet<MaxNumResourceSlots>       m_rcTracked;
 
     std::array<DxvkShaderResourceSlot, MaxNumResourceSlots>  m_rc;
     std::array<DxvkDescriptorInfo,     MaxNumActiveBindings> m_descInfos;
@@ -1064,18 +1122,19 @@ namespace dxvk {
     
     void updateGraphicsShaderResources();
     void updateGraphicsShaderDescriptors();
+
+    void updateShaderSamplers(
+      const DxvkPipelineLayout*     layout);
     
-    void updateShaderResources(
-            VkPipelineBindPoint     bindPoint,
-            DxvkBindingMask&        bindMask,
+    template<VkPipelineBindPoint BindPoint>
+    bool updateShaderResources(
       const DxvkPipelineLayout*     layout);
     
     VkDescriptorSet updateShaderDescriptors(
-            VkPipelineBindPoint     bindPoint,
       const DxvkPipelineLayout*     layout);
     
+    template<VkPipelineBindPoint BindPoint>
     void updateShaderDescriptorSetBinding(
-            VkPipelineBindPoint     bindPoint,
             VkDescriptorSet         set,
       const DxvkPipelineLayout*     layout);
 
@@ -1091,14 +1150,13 @@ namespace dxvk {
     
     void updateDynamicState();
 
-    void updatePushConstants(
-            VkPipelineBindPoint     bindPoint);
-    
-    bool validateComputeState();
-    bool validateGraphicsState();
+    template<VkPipelineBindPoint BindPoint>
+    void updatePushConstants();
     
     void commitComputeState();
-    void commitGraphicsState(bool indexed);
+    
+    template<bool Indexed>
+    void commitGraphicsState();
     
     void commitComputeInitBarriers();
     void commitComputePostBarriers();

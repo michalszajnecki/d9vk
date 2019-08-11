@@ -277,6 +277,11 @@ namespace dxvk {
     if (FAILED(DecodeSampleCount(pDesc->SampleDesc.Count, nullptr)))
       return E_INVALIDARG;
     
+    if ((pDesc->MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS)
+     && (pDesc->BindFlags & (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET))
+                         != (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET))
+      return E_INVALIDARG;
+
     // Use the maximum possible mip level count if the supplied
     // mip level count is either unspecified (0) or invalid
     const uint32_t maxMipLevelCount = pDesc->SampleDesc.Count <= 1
@@ -337,6 +342,9 @@ namespace dxvk {
       requestedFeatures |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
                         |  VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     }
+
+    if (Format == VK_FORMAT_D32_SFLOAT_S8_UINT || Format == VK_FORMAT_D24_UNORM_S8_UINT)
+      requestedFeatures |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
     if (requestedFeatures == 0)
       return 0;
@@ -753,6 +761,7 @@ namespace dxvk {
     const D3D11_COMMON_TEXTURE_DESC*  pDesc)
   : m_texture (pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE1D),
     m_interop (this, &m_texture),
+    m_surface (this, &m_texture),
     m_resource(this),
     m_d3d10   (this, pDevice->GetD3D10Interface()) {
     
@@ -785,6 +794,14 @@ namespace dxvk {
       return S_OK;
     }
     
+    if (m_surface.isSurfaceCompatible()
+     && (riid == __uuidof(IDXGISurface)
+      || riid == __uuidof(IDXGISurface1)
+      || riid == __uuidof(IDXGISurface2))) {
+      *ppvObject = ref(&m_surface);
+      return S_OK;
+    }
+
     if (riid == __uuidof(IDXGIObject)
      || riid == __uuidof(IDXGIDeviceSubObject)
      || riid == __uuidof(IDXGIResource)

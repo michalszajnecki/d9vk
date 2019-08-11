@@ -24,6 +24,7 @@ namespace dxvk {
       FlushInternal();
   }
 
+
   void D3D9Initializer::InitBuffer(
           D3D9CommonBuffer*  pBuffer) {
     VkMemoryPropertyFlags memFlags = pBuffer->GetBuffer<D3D9_COMMON_BUFFER_TYPE_REAL>()->memFlags();
@@ -38,15 +39,14 @@ namespace dxvk {
   
 
   void D3D9Initializer::InitTexture(
-          D3D9CommonTexture* pTexture) {
-    if (pTexture->GetImage() == nullptr)
+          D3D9CommonTexture* pTexture,
+          void*              pInitialData) {    
+    if (pTexture->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_NONE)
       return;
 
-    VkMemoryPropertyFlags memFlags = pTexture->GetImage()->memFlags();
-    
-    (memFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-      ? InitHostVisibleTexture(pTexture)
-      : InitDeviceLocalTexture(pTexture);
+    (pTexture->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_BACKED)
+      ? InitDeviceLocalTexture(pTexture)
+      : InitHostVisibleTexture(pTexture, pInitialData);
   }
 
 
@@ -110,7 +110,7 @@ namespace dxvk {
             image, value, subresources);
         } else {
           VkClearDepthStencilValue value;
-          value.depth   = 1.0f;
+          value.depth   = 0.0f;
           value.stencil = 0;
           
           m_context->clearDepthStencilImage(
@@ -126,9 +126,25 @@ namespace dxvk {
 
 
   void D3D9Initializer::InitHostVisibleTexture(
-          D3D9CommonTexture* pTexture) {
-    // TODO implement properly with memset/memcpy
-    InitDeviceLocalTexture(pTexture);
+          D3D9CommonTexture* pTexture,
+          void*              pInitialData) {
+    // If the buffer is mapped, we can write data directly
+    // to the mapped memory region instead of doing it on
+    // the GPU. Same goes for zero-initialization.
+    for (uint32_t i = 0; i < pTexture->CountSubresources(); i++) {
+      DxvkBufferSliceHandle mapSlice  = pTexture->GetBuffer(i)->getSliceHandle();
+
+      if (pInitialData != nullptr) {
+        std::memcpy(
+          mapSlice.mapPtr,
+          pInitialData,
+          mapSlice.length);
+      } else {
+        std::memset(
+          mapSlice.mapPtr, 0,
+          mapSlice.length);
+      }
+    }
   }
 
 

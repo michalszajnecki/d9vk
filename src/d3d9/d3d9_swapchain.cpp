@@ -21,6 +21,8 @@ namespace dxvk {
     : D3D9SwapChainExBase(pDevice)
     , m_device           (pDevice->GetDXVKDevice())
     , m_context          (m_device->createContext()) {
+    UpdateMonitorInfo();
+
     this->NormalizePresentParameters(pPresentParams);
     m_presentParams = *pPresentParams;
     m_window = m_presentParams.hDeviceWindow;
@@ -35,6 +37,8 @@ namespace dxvk {
     InitRenderState();
     InitSamplers();
     InitShaders();
+    InitOptions();
+    InitRamp();
 
     // Apply initial window mode and fullscreen state
     if (!m_presentParams.Windowed && FAILED(EnterFullscreenMode(pPresentParams, pFullscreenDisplayMode)))
@@ -157,7 +161,36 @@ namespace dxvk {
 
 
   HRESULT STDMETHODCALLTYPE D3D9SwapChainEx::GetRasterStatus(D3DRASTER_STATUS* pRasterStatus) {
-    Logger::warn("D3D9SwapChainEx::GetRasterStatus: Stub");
+    // We could use D3DKMTGetScanLine but Wine doesn't implement that.
+    // So... we lie here and make some stuff up
+    // enough that it makes games work.
+
+    // Assume there's 20 lines in a vBlank.
+    constexpr uint32_t vBlankLineCount = 20;
+
+    if (pRasterStatus == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    D3DDISPLAYMODEEX mode;
+    mode.Size = sizeof(mode);
+    if (FAILED(this->GetDisplayModeEx(&mode, nullptr)))
+      return D3DERR_INVALIDCALL;
+
+    uint32_t scanLineCount = mode.Height + vBlankLineCount;
+
+    auto nowUs = std::chrono::time_point_cast<std::chrono::microseconds>(
+      std::chrono::high_resolution_clock::now())
+      .time_since_epoch();
+
+    auto frametimeUs = std::chrono::microseconds(1000000u / mode.RefreshRate);
+    auto scanLineUs  = frametimeUs / scanLineCount;
+
+    pRasterStatus->ScanLine = (nowUs % frametimeUs) / scanLineUs;
+    pRasterStatus->InVBlank = pRasterStatus->ScanLine >= mode.Height;
+
+    if (pRasterStatus->InVBlank)
+      pRasterStatus->ScanLine = 0;
+
     return D3D_OK;
   }
 
@@ -169,6 +202,7 @@ namespace dxvk {
     *pMode = D3DDISPLAYMODE();
 
     D3DDISPLAYMODEEX mode;
+    mode.Size = sizeof(mode);
     HRESULT hr = this->GetDisplayModeEx(&mode, nullptr);
 
     if (FAILED(hr))
@@ -210,21 +244,13 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
 
     if (pRotation != nullptr)
-      * pRotation = D3DDISPLAYROTATION_IDENTITY;
+      *pRotation = D3DDISPLAYROTATION_IDENTITY;
 
     if (pMode != nullptr) {
-      ::MONITORINFOEXW monInfo;
-      monInfo.cbSize = sizeof(monInfo);
-
-      if (!::GetMonitorInfoW(GetDefaultMonitor(), reinterpret_cast<MONITORINFO*>(&monInfo))) {
-        Logger::err("D3D9SwapChainEx::GetDisplayModeEx: Failed to query monitor info");
-        return D3DERR_INVALIDCALL;
-      }
-
       DEVMODEW devMode = DEVMODEW();
       devMode.dmSize = sizeof(devMode);
 
-      if (!::EnumDisplaySettingsW(monInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode)) {
+      if (!::EnumDisplaySettingsW(m_monInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode)) {
         Logger::err("D3D9SwapChainEx::GetDisplayModeEx: Failed to enum display settings");
         return D3DERR_INVALIDCALL;
       }
@@ -233,7 +259,7 @@ namespace dxvk {
       pMode->Width            = devMode.dmPelsWidth;
       pMode->Height           = devMode.dmPelsHeight;
       pMode->RefreshRate      = devMode.dmDisplayFrequency;
-      pMode->Format           = D3DFMT_X8R8G8B8; // Fix me
+      pMode->Format           = D3DFMT_X8R8G8B8;
       pMode->ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
     }
 
@@ -304,8 +330,12 @@ namespace dxvk {
   void    D3D9SwapChainEx::SetGammaRamp(
             DWORD         Flags,
       const D3DGAMMARAMP* pRamp) {
+    if (unlikely(pRamp == nullptr))
+      return;
+
+    m_ramp = *pRamp;
+
     bool isIdentity = true;
-    constexpr uint32_t NumControlPoints = 256;
 
     std::array<D3D9_VK_GAMMA_CP, NumControlPoints> cp;
       
@@ -330,7 +360,17 @@ namespace dxvk {
 
 
   void    D3D9SwapChainEx::GetGammaRamp(D3DGAMMARAMP* pRamp) {
-    Logger::warn("D3D9SwapChainEx::GetGammaRamp: Stub");
+    if (likely(pRamp != nullptr))
+      *pRamp = m_ramp;
+  }
+
+
+  void    D3D9SwapChainEx::Invalidate(HWND hWindow) {
+    if (hWindow == nullptr)
+      hWindow = m_parent->GetWindow();
+
+    if (m_presentParams.hDeviceWindow == hWindow)
+      m_presenter = nullptr;
   }
 
 
@@ -360,15 +400,17 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::PresentImage(UINT SyncInterval) {
-    // Wait for the sync event so that we
-    // respect the maximum frame latency
-    Rc<DxvkEvent> syncEvent = m_parent->GetFrameSyncEvent(m_presentParams.BackBufferCount);
+    // Wait for the sync event so that we respect the maximum frame latency
+    auto syncEvent = m_parent->GetFrameSyncEvent(m_presentParams.BackBufferCount);
     syncEvent->wait();
     
     if (m_hud != nullptr)
       m_hud->update();
 
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
+      if (m_asyncPresent)
+        SynchronizePresent();
+
       m_context->beginRecording(
         m_device->createCommandList());
       
@@ -453,32 +495,41 @@ namespace dxvk {
       m_context->bindResourceView(BindingIds::Image, m_swapImageView, nullptr);
       m_context->bindResourceView(BindingIds::Gamma, m_gammaTextureView, nullptr);
 
-      m_context->draw(4, 1, 0, 0);
+      m_context->draw(3, 1, 0, 0);
 
       if (m_hud != nullptr)
         m_hud->render(m_context, info.imageExtent);
       
-      if (i + 1 >= SyncInterval) {
-        DxvkEventRevision eventRev;
-        eventRev.event    = syncEvent;
-        eventRev.revision = syncEvent->reset();
-        m_context->signalEvent(eventRev);
-      }
+      if (i + 1 >= SyncInterval)
+        m_context->queueSignal(syncEvent);
 
       m_device->submitCommandList(
         m_context->endRecording(),
         sync.acquire, sync.present);
       
-      status = m_device->presentImage(
-        m_presenter, sync.present);
-      
-      if (status != VK_SUCCESS)
-        RecreateSwapChain(m_vsync);
+      m_device->presentImage(m_presenter,
+        sync.present, &m_presentStatus);
+
+      if (!m_asyncPresent)
+        SynchronizePresent();
     }
   }
 
 
+  void D3D9SwapChainEx::SynchronizePresent() {
+    // Recreate swap chain if the previous present call failed
+    VkResult status = m_device->waitForSubmission(&m_presentStatus);
+
+    if (status != VK_SUCCESS)
+      RecreateSwapChain(m_vsync);
+  }
+
+
   void D3D9SwapChainEx::RecreateSwapChain(BOOL Vsync) {
+    // Ensure that we can safely destroy the swap chain
+    m_device->waitForSubmission(&m_presentStatus);
+    m_presentStatus.result = VK_SUCCESS;
+
     vk::PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = m_presentExtent;
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
@@ -493,7 +544,7 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::CreatePresenter() {
-    DxvkDeviceQueue graphicsQueue = m_device->graphicsQueue();
+    DxvkDeviceQueue graphicsQueue = m_device->queues().graphics;
 
     vk::PresenterDevice presenterDevice;
     presenterDevice.queueFamily   = graphicsQueue.queueFamily;
@@ -578,18 +629,17 @@ namespace dxvk {
     m_backBuffer        = nullptr;
 
     // Create new back buffer
-    D3D9TextureDesc desc;
+    D3D9_COMMON_TEXTURE_DESC desc;
     desc.Width              = std::max(m_presentParams.BackBufferWidth,  1u);
     desc.Height             = std::max(m_presentParams.BackBufferHeight, 1u);
     desc.Depth              = 1;
     desc.MipLevels          = 1;
+    desc.ArraySize          = 1;
     desc.Format             = EnumerateFormat(m_presentParams.BackBufferFormat);
     desc.MultiSample        = m_presentParams.MultiSampleType;
     desc.MultisampleQuality = m_presentParams.MultiSampleQuality;
-    desc.Type               = D3DRTYPE_SURFACE;
     desc.Pool               = D3DPOOL_DEFAULT;
     desc.Usage              = D3DUSAGE_RENDERTARGET;
-    desc.Offscreen          = FALSE;
     desc.Discard            = FALSE;
 
     m_backBuffer = new D3D9Surface(m_parent, &desc);
@@ -736,6 +786,16 @@ namespace dxvk {
   }
 
 
+  void D3D9SwapChainEx::InitOptions() {
+    // Not synchronizing after present seems to increase
+    // the likelyhood of hangs on Nvidia for some reason.
+    m_asyncPresent = !m_device->adapter()->matchesDriver(
+      DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0);
+
+    applyTristate(m_asyncPresent, m_parent->GetOptions()->asyncPresent);
+  }
+
+
   void D3D9SwapChainEx::InitRenderState() {
     m_iaState.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     m_iaState.primitiveRestart  = VK_FALSE;
@@ -833,6 +893,17 @@ namespace dxvk {
       fsResourceSlots.size(),
       fsResourceSlots.data(),
       { 1u, 1u }, fsCode);
+  }
+
+
+  void D3D9SwapChainEx::InitRamp() {
+    for (uint32_t i = 0; i < NumControlPoints; i++) {
+      DWORD identity = DWORD(MapGammaControlPoint(float(i) / float(NumControlPoints - 1)));
+
+      m_ramp.red[i]   = identity;
+      m_ramp.green[i] = identity;
+      m_ramp.blue[i]  = identity;
+    }
   }
 
 
@@ -989,19 +1060,11 @@ namespace dxvk {
   HRESULT D3D9SwapChainEx::RestoreDisplayMode(HMONITOR hMonitor) {
     if (hMonitor == nullptr)
       return D3DERR_INVALIDCALL;
-
-    ::MONITORINFOEXW monInfo;
-    monInfo.cbSize = sizeof(monInfo);
-
-    if (!::GetMonitorInfoW(hMonitor, reinterpret_cast<MONITORINFO*>(&monInfo))) {
-      Logger::err("D3D9: Failed to query monitor info");
-      return E_FAIL;
-    }
     
     DEVMODEW devMode = { };
     devMode.dmSize = sizeof(devMode);
 
-    if (!::EnumDisplaySettingsW(monInfo.szDevice, ENUM_REGISTRY_SETTINGS, &devMode))
+    if (!::EnumDisplaySettingsW(m_monInfo.szDevice, ENUM_REGISTRY_SETTINGS, &devMode))
       return D3DERR_INVALIDCALL;
     
     Logger::info(str::format("D3D9: Setting display mode: ",
@@ -1030,6 +1093,13 @@ namespace dxvk {
     m_presentExtent   = VkExtent2D{ std::max(m_presentExtent.width, 1u), std::max(m_presentExtent.height, 1u) };
 
     return m_presentExtent != oldExtent;
+  }
+
+  void    D3D9SwapChainEx::UpdateMonitorInfo() {
+    m_monInfo.cbSize = sizeof(m_monInfo);
+
+    if (!::GetMonitorInfoW(GetDefaultMonitor(), reinterpret_cast<MONITORINFO*>(&m_monInfo)))
+      throw DxvkError("D3D9SwapChainEx::GetDisplayModeEx: Failed to query monitor info");
   }
 
 }

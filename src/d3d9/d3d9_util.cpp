@@ -35,32 +35,26 @@ namespace dxvk {
       ppDisassembly);
   }
 
+
   HRESULT DecodeMultiSampleType(
           D3DMULTISAMPLE_TYPE       MultiSample,
+          DWORD                     MultisampleQuality,
           VkSampleCountFlagBits*    pCount) {
-    VkSampleCountFlagBits flag;
+    uint32_t sampleCount = std::max<uint32_t>(MultiSample, 1u);
 
-    switch (MultiSample) {
-    case D3DMULTISAMPLE_NONE:
-    case D3DMULTISAMPLE_NONMASKABLE: flag = VK_SAMPLE_COUNT_1_BIT;  break;
-    case D3DMULTISAMPLE_2_SAMPLES:   flag = VK_SAMPLE_COUNT_2_BIT;  break;
-    case D3DMULTISAMPLE_4_SAMPLES:   flag = VK_SAMPLE_COUNT_4_BIT;  break;
-    case D3DMULTISAMPLE_8_SAMPLES:   flag = VK_SAMPLE_COUNT_8_BIT;  break;
-    case D3DMULTISAMPLE_16_SAMPLES:  flag = VK_SAMPLE_COUNT_8_BIT; break;
-    default:                         return D3DERR_INVALIDCALL;
-    }
+    // Check if this is a power of two...
+    if (sampleCount & (sampleCount - 1))
+      return D3DERR_INVALIDCALL;
+
+    if (MultiSample == D3DMULTISAMPLE_NONMASKABLE)
+      sampleCount = 1u << MultisampleQuality;
 
     if (pCount != nullptr)
-      *pCount = flag;
+      *pCount = VkSampleCountFlagBits(sampleCount);
 
     return D3D_OK;
   }
 
-  bool    ResourceBindable(
-      DWORD                     Usage,
-      D3DPOOL                   Pool) {
-    return true;
-  }
 
   VkFormat GetPackedDepthStencilFormat(D3D9Format Format) {
     switch (Format) {
@@ -95,6 +89,7 @@ namespace dxvk {
     }
   }
 
+
   VkFormatFeatureFlags GetImageFormatFeatures(DWORD Usage) {
     VkFormatFeatureFlags features = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
@@ -106,6 +101,7 @@ namespace dxvk {
 
     return features;
   }
+
 
   VkImageUsageFlags GetImageUsageFlags(DWORD Usage) {
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -119,7 +115,8 @@ namespace dxvk {
     return usage;
   }
 
-  uint32_t VertexCount(D3DPRIMITIVETYPE type, UINT count) {
+
+  uint32_t GetVertexCount(D3DPRIMITIVETYPE type, UINT count) {
     switch (type) {
       default:
       case D3DPT_TRIANGLELIST:  return count * 3;
@@ -131,7 +128,8 @@ namespace dxvk {
     }
   }
 
-  DxvkInputAssemblyState InputAssemblyState(D3DPRIMITIVETYPE type) {
+
+  DxvkInputAssemblyState DecodeInputAssemblyState(D3DPRIMITIVETYPE type) {
     switch (type) {
       default:
       case D3DPT_TRIANGLELIST:
@@ -153,6 +151,7 @@ namespace dxvk {
         return { VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,   VK_TRUE,  0 };
     }
   }
+
 
   VkBlendFactor DecodeBlendFactor(D3DBLEND BlendFactor, bool IsAlpha) {
     switch (BlendFactor) {
@@ -177,6 +176,7 @@ namespace dxvk {
     }
   }
 
+
   VkBlendOp DecodeBlendOp(D3DBLENDOP BlendOp) {
     switch (BlendOp) {
       default:
@@ -188,6 +188,7 @@ namespace dxvk {
     }
   }
 
+
   VkFilter DecodeFilter(D3DTEXTUREFILTERTYPE Filter) {
     switch (Filter) {
     case D3DTEXF_NONE:
@@ -197,6 +198,7 @@ namespace dxvk {
       return VK_FILTER_LINEAR;
     }
   }
+
 
   D3D9MipFilter DecodeMipFilter(D3DTEXTUREFILTERTYPE Filter) {
     D3D9MipFilter filter;
@@ -213,9 +215,11 @@ namespace dxvk {
     return filter;
   }
 
+
   bool IsAnisotropic(D3DTEXTUREFILTERTYPE Filter) {
     return Filter == D3DTEXF_ANISOTROPIC;
   }
+
 
   VkSamplerAddressMode DecodeAddressMode(D3DTEXTUREADDRESS Mode) {
     switch (Mode) {
@@ -233,6 +237,7 @@ namespace dxvk {
     }
   }
 
+
   VkCompareOp DecodeCompareOp(D3DCMPFUNC Func) {
     switch (Func) {
       default:
@@ -246,6 +251,7 @@ namespace dxvk {
       case D3DCMP_ALWAYS:       return VK_COMPARE_OP_ALWAYS;
     }
   }
+
 
   VkStencilOp DecodeStencilOp(D3DSTENCILOP Op) {
     switch (Op) {
@@ -261,6 +267,7 @@ namespace dxvk {
     }
   }
 
+
   VkCullModeFlags DecodeCullMode(D3DCULL Mode) {
     switch (Mode) {
       case D3DCULL_NONE: return VK_CULL_MODE_NONE;
@@ -269,6 +276,7 @@ namespace dxvk {
       case D3DCULL_CCW:  return VK_CULL_MODE_BACK_BIT;
     }
   }
+
 
   VkPolygonMode DecodeFillMode(D3DFILLMODE Mode) {
     switch (Mode) {
@@ -279,13 +287,67 @@ namespace dxvk {
     }
   }
 
+
   VkIndexType DecodeIndexType(D3D9Format Format) {
     return Format == D3D9Format::INDEX16
                    ? VK_INDEX_TYPE_UINT16
                    : VK_INDEX_TYPE_UINT32;
   }
 
-  uint32_t DecltypeSize(D3DDECLTYPE Type) {
+
+  VkFormat DecodeDecltype(D3DDECLTYPE Type) {
+    switch (Type) {
+      case D3DDECLTYPE_FLOAT1:    return VK_FORMAT_R32_SFLOAT;
+      case D3DDECLTYPE_FLOAT2:    return VK_FORMAT_R32G32_SFLOAT;
+      case D3DDECLTYPE_FLOAT3:    return VK_FORMAT_R32G32B32_SFLOAT;
+      case D3DDECLTYPE_FLOAT4:    return VK_FORMAT_R32G32B32A32_SFLOAT;
+      case D3DDECLTYPE_D3DCOLOR:  return VK_FORMAT_B8G8R8A8_UNORM;
+      case D3DDECLTYPE_UBYTE4:    return VK_FORMAT_R8G8B8A8_USCALED;
+      case D3DDECLTYPE_SHORT2:    return VK_FORMAT_R16G16_SSCALED;
+      case D3DDECLTYPE_SHORT4:    return VK_FORMAT_R16G16B16A16_SSCALED;
+      case D3DDECLTYPE_UBYTE4N:   return VK_FORMAT_R8G8B8A8_UNORM;
+      case D3DDECLTYPE_SHORT2N:   return VK_FORMAT_R16G16_SNORM;
+      case D3DDECLTYPE_SHORT4N:   return VK_FORMAT_R16G16B16A16_SNORM;
+      case D3DDECLTYPE_USHORT2N:  return VK_FORMAT_R16G16_UNORM;
+      case D3DDECLTYPE_USHORT4N:  return VK_FORMAT_R16G16B16A16_UNORM;
+      case D3DDECLTYPE_UDEC3:     return VK_FORMAT_A2B10G10R10_USCALED_PACK32;
+      case D3DDECLTYPE_FLOAT16_2: return VK_FORMAT_R16G16_SFLOAT;
+      case D3DDECLTYPE_FLOAT16_4: return VK_FORMAT_R16G16B16A16_SFLOAT;
+      case D3DDECLTYPE_DEC3N:     return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
+      case D3DDECLTYPE_UNUSED:
+      default:                    return VK_FORMAT_UNDEFINED;
+    }
+  }
+
+  void ConvertBox(D3DBOX box, VkOffset3D& offset, VkExtent3D& extent) {
+    offset.x = box.Left;
+    offset.y = box.Top;
+    offset.z = box.Front;
+
+    extent.width  = box.Right  - box.Left;
+    extent.height = box.Bottom - box.Top;
+    extent.depth  = box.Back   - box.Front;
+  }
+
+  void ConvertRect(RECT rect, VkOffset3D& offset, VkExtent3D& extent) {
+    offset.x = rect.left;
+    offset.y = rect.top;
+    offset.z = 0;
+
+    extent.width  = rect.right  - rect.left;
+    extent.height = rect.bottom - rect.top;
+    extent.depth  = 1;
+  }
+
+  void ConvertRect(RECT rect, VkOffset2D& offset, VkExtent2D& extent) {
+    offset.x = rect.left;
+    offset.y = rect.top;
+
+    extent.width  = rect.right  - rect.left;
+    extent.height = rect.bottom - rect.top;
+  }
+
+  uint32_t GetDecltypeSize(D3DDECLTYPE Type) {
     switch (Type) {
       case D3DDECLTYPE_FLOAT1:    return 1 * sizeof(float);
       case D3DDECLTYPE_FLOAT2:    return 2 * sizeof(float);
@@ -306,6 +368,23 @@ namespace dxvk {
       case D3DDECLTYPE_FLOAT16_4: return 4 * 2;
       default:                    return 0;
     }
+  }
+
+
+  bool IsDepthFormat(D3D9Format Format) {
+    return Format == D3D9Format::D16_LOCKABLE
+        || Format == D3D9Format::D32
+        || Format == D3D9Format::D15S1
+        || Format == D3D9Format::D24S8
+        || Format == D3D9Format::D24X8
+        || Format == D3D9Format::D24X4S4
+        || Format == D3D9Format::D16
+        || Format == D3D9Format::D32F_LOCKABLE
+        || Format == D3D9Format::D24FS8
+        || Format == D3D9Format::D32_LOCKABLE
+        || Format == D3D9Format::DF16
+        || Format == D3D9Format::DF24
+        || Format == D3D9Format::INTZ;
   }
 
 }

@@ -8,62 +8,122 @@
 namespace dxvk {
 
   /**
- * \brief Image memory mapping mode
- *
- * Determines how exactly \c Map will
- * behave when mapping an image.
- */
+   * \brief Image memory mapping mode
+   * 
+   * Determines how exactly \c LockBox will
+   * behave when mapping an image.
+   */
   enum D3D9_COMMON_TEXTURE_MAP_MODE {
-    D3D9_COMMON_TEXTURE_MAP_MODE_BUFFER, ///< Mapped through buffer
-    D3D9_COMMON_TEXTURE_MAP_MODE_DIRECT, ///< Directly mapped to host mem
+    D3D9_COMMON_TEXTURE_MAP_MODE_NONE,      ///< No mapping available
+    D3D9_COMMON_TEXTURE_MAP_MODE_BACKED,    ///< Mapped image through buffer
+    D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM, ///< Only a buffer - no image
   };
-
-  struct Direct3DView9 {
-    Rc<DxvkImageView> View;
-    VkImageLayout Layout;
-  };
-
-  struct D3D9TextureDesc {
-    D3DRESOURCETYPE Type;
-    UINT Width;
-    UINT Height;
-    UINT Depth;
-    UINT MipLevels;
-    DWORD Usage;
-    D3D9Format Format;
-    D3DPOOL Pool;
-    BOOL Discard;
+  
+  /**
+   * \brief Common texture description
+   * 
+   * Contains all members that can be
+   * defined for 2D, Cube and 3D textures.
+   */
+  struct D3D9_COMMON_TEXTURE_DESC {
+    UINT                Width;
+    UINT                Height;
+    UINT                Depth;
+    UINT                ArraySize;
+    UINT                MipLevels;
+    DWORD               Usage;
+    D3D9Format          Format;
+    D3DPOOL             Pool;
+    BOOL                Discard;
     D3DMULTISAMPLE_TYPE MultiSample;
-    DWORD MultisampleQuality;
-    BOOL Offscreen;
+    DWORD               MultisampleQuality;
   };
+
+  struct D3D9ColorView {
+    inline Rc<DxvkImageView> Pick(bool Srgb) const {
+      return Srgb ? this->Srgb : this->Color;
+    }
+
+    Rc<DxvkImageView> Color;
+    Rc<DxvkImageView> Srgb;
+  };
+
+  struct D3D9ViewSet {
+    D3D9ColorView                    Sample;
+    Rc<DxvkImageView>                MipGenRT;
+
+    std::array<
+      std::array<D3D9ColorView, 15>, 6>     SubresourceSample;
+    std::array<
+      std::array<D3D9ColorView, 15>, 6>     SubresourceRenderTarget;
+    std::array<
+      std::array<Rc<DxvkImageView>, 15>, 6> SubresourceDepth;
+
+    bool                             Hazardous = false;
+
+    VkImageLayout GetRTLayout() const {
+      return SubresourceRenderTarget[0][0].Color != nullptr
+          && SubresourceRenderTarget[0][0].Color->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL
+          && !Hazardous
+        ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        : VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    VkImageLayout GetDepthLayout() const {
+      return SubresourceDepth[0][0] != nullptr
+          && SubresourceDepth[0][0]->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL
+        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        : VK_IMAGE_LAYOUT_GENERAL;
+    }
+  };
+
+  template <typename T>
+  using D3D9SubresourceArray = std::array<T, caps::MaxSubresources>;
 
   class D3D9CommonTexture {
 
   public:
 
     D3D9CommonTexture(
-            D3D9DeviceEx*           pDevice,
-      const D3D9TextureDesc*        pDesc);
-
-    D3D9CommonTexture(
-            D3D9DeviceEx*           pDevice,
-            Rc<DxvkImage>           Image,
-            Rc<DxvkImageView>       ImageView,
-            Rc<DxvkImageView>       ImageViewSrgb,
-      const D3D9TextureDesc*        pDesc);
+            D3D9DeviceEx*             pDevice,
+      const D3D9_COMMON_TEXTURE_DESC* pDesc,
+            D3DRESOURCETYPE           ResourceType);
 
     ~D3D9CommonTexture();
 
     /**
-     * \brief Texture properties
-     *
-     * The returned data can be used to fill in
-     * \c D3D9TextureDesc and similar structs.
-     * \returns Pointer to texture description
+     * \brief Device
+     * \returns The parent device
      */
-    const D3D9TextureDesc* Desc() const {
+    D3D9DeviceEx* Device() const {
+      return m_device;
+    }
+
+    /**
+      * \brief Texture properties
+      *
+      * The returned data can be used to fill in
+      * \c D3D11_TEXTURE2D_DESC and similar structs.
+      * \returns Pointer to texture description
+      */
+    const D3D9_COMMON_TEXTURE_DESC* Desc() const {
       return &m_desc;
+    }
+
+    /**
+     * \brief Vulkan Format
+     * \returns The Vulkan format of the resource
+     */
+    VkFormat Format() const {
+      return m_format;
+    }
+
+    /**
+     * \brief Counts number of subresources
+     * \returns Number of subresources
+     */
+    UINT CountSubresources() const {
+      return m_desc.ArraySize * m_desc.MipLevels;
     }
 
     /**
@@ -76,13 +136,41 @@ namespace dxvk {
 
     /**
      * \brief The DXVK image
+     * Note, this will be nullptr if the map mode is D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM
      * \returns The DXVK image
      */
     Rc<DxvkImage> GetImage() const {
       return m_image;
     }
 
-    Rc<DxvkImage> GetResolveImage();
+    /**
+     * \brief Get a copy of the main image, but with a single sample
+     * This function will allocate/reuse an image with the same info
+     * as the main image
+     * \returns An image with identical info, but 1 sample
+     */
+    Rc<DxvkImage> GetResolveImage() {
+      if (unlikely(m_resolveImage == nullptr))
+        m_resolveImage = CreateResolveImage();
+
+      return m_resolveImage;
+    }
+
+    Rc<DxvkBuffer> GetBuffer(UINT Subresource) {
+      return m_buffers[Subresource];
+    }
+
+
+    DxvkBufferSliceHandle GetMappedSlice(UINT Subresource) {
+      return m_mappedSlices[Subresource];
+    }
+
+
+    DxvkBufferSliceHandle DiscardMapSlice(UINT Subresource) {
+      DxvkBufferSliceHandle handle = m_buffers[Subresource]->allocSlice();
+      m_mappedSlices[Subresource] = handle;
+      return handle;
+    }
 
     /**
      * \brief Computes subresource from the subresource index
@@ -94,238 +182,237 @@ namespace dxvk {
      * \returns The Vulkan image subresource
      */
     VkImageSubresource GetSubresourceFromIndex(
-      VkImageAspectFlags    Aspect,
-      UINT                  Subresource) const;
-
-    /**
-     * \brief Checks whether a view can be created for this textue
-     *
-     * View formats are only compatible if they are either identical
-     * or from the same family of typeless formats, where the resource
-     * format must be typeless and the view format must be typed. This
-     * will also check whether the required bind flags are supported.
-     * \param [in] D3D9 usage flags for the view.
-     * \param [in] Format The desired view format.
-     * \param [in] If the format should be SRGB or not.
-     * \returns \c true if the format is compatible
-     */
-    bool CheckViewCompatibility(
-      DWORD               Usage,
-      D3D9Format          Format,
-      bool                srgb) const;
+            VkImageAspectFlags    Aspect,
+            UINT                  Subresource) const;
 
     /**
      * \brief Normalizes and validates texture description
-     *
+     * 
      * Fills in undefined values and validates the texture
      * parameters. Any error returned by this method should
      * be forwarded to the application.
      * \param [in,out] pDesc Texture description
-     * \returns \c D3D_OK if the parameters are valid
+     * \returns \c S_OK if the parameters are valid
      */
     static HRESULT NormalizeTextureProperties(
-      D3D9TextureDesc* pDesc);
+            D3D9_COMMON_TEXTURE_DESC*  pDesc);
 
     /**
-     * \brief Locks a subresource of an image
-     *
-     * Passthrough to device lock.
-     * \param [in] Subresource The subresource of the image to lock
-     * \param [out] pLockedBox The returned locked box of the image, containing data ptr and strides
-     * \param [in] pBox The region of the subresource to lock. This offsets the returned data ptr
-     * \param [in] Flags The D3DLOCK_* flags to lock the image with
-     * \returns \c D3D_OK if the parameters are valid or D3DERR_INVALIDCALL if it fails.
+     * \brief Lock Flags
+     * Set the lock flags for a given subresource
      */
-    HRESULT Lock(
-            UINT            Face,
-            UINT            MipLevel,
-            D3DLOCKED_BOX*  pLockedBox,
-      const D3DBOX*         pBox,
-            DWORD           Flags);
+    void SetLockFlags(UINT Subresource, DWORD Flags) {
+      m_lockFlags[Subresource] = Flags;
+    }
 
     /**
-     * \brief Unlocks a subresource of an image
-     *
-     * Passthrough to device unlock.
-     * \param [in] Subresource The subresource of the image to unlock
-     * \returns \c D3D_OK if the parameters are valid or D3DERR_INVALIDCALL if it fails.
+     * \brief Lock Flags
+     * \returns The log flags for a given subresource
      */
-    HRESULT Unlock(
-            UINT Face,
-            UINT MipLevel);
-
-    Rc<DxvkImageView> GetMipGenView() const {
-      return m_mipGenView;
+    DWORD GetLockFlags(UINT Subresource) const {
+      return m_lockFlags[Subresource];
     }
 
-    Rc<DxvkImageView> GetImageView(bool srgb) const {
-      return srgb ? m_imageViewSrgb : m_imageView;
-    }
-
-    Rc<DxvkImageView> GetImageViewLayer(uint32_t face, bool srgb) const {
-      return srgb ? m_imageViewSrgbFaces[face] : m_imageViewFaces[face];
-    }
-
-    Rc<DxvkImageView> GetRenderTargetView(uint32_t face, bool srgb) const {
-      return srgb ? m_renderTargetViewSrgb[face] : m_renderTargetView[face];
-    }
-
-    Rc<DxvkImageView> GetDepthStencilView(uint32_t face) const {
-      return m_depthStencilView[face];
-    }
-
-    bool RequiresFixup() const {
-      return m_desc.Format == D3D9Format::R8G8B8;
-          //|| m_desc.Format == D3D9Format::A8L8;
-    }
-
-    UINT GetMipCount() const {
-      return m_desc.MipLevels;
-    }
-
-    UINT GetLayerCount() const {
-      return m_desc.Type == D3DRTYPE_CUBETEXTURE ? 6 : 1;
-    }
-
-    UINT GetSubresourceCount() const {
-      return GetLayerCount()* m_desc.MipLevels;
-    }
-
-    void GenerateMipSubLevels() {
-      if (m_desc.Usage & D3DUSAGE_AUTOGENMIPMAP)
-        m_device->GenerateMips(this);
-    }
-
-    VkImageViewType GetImageViewType() const;
-
-    void RecreateImageViews(UINT Lod);
-    void CreateDepthStencilViews();
-    void CreateRenderTargetViews();
-
-    VkImageLayout GetDepthLayout() const {
-      return (m_depthStencilView[0] != nullptr
-           && m_depthStencilView[0]->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL)
-        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        : VK_IMAGE_LAYOUT_GENERAL;
-    }
-
-    VkImageLayout GetRenderTargetLayout() const {
-      return (m_renderTargetView[0] != nullptr
-           && m_renderTargetView[0]->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL)
-        ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-        : VK_IMAGE_LAYOUT_GENERAL;
-    }
-
-    VkDeviceSize GetMipLength(UINT MipLevel) const;
-
-    inline void MarkSubresourceMapped(UINT Face, UINT MipLevel, DWORD LockFlags) {
-      if (!(LockFlags & D3DLOCK_READONLY))
-        m_writeableSubresources[Face] |= (1u << MipLevel);
-    }
-
-    inline bool IsWriteLock(UINT Face, UINT MipLevel) {
-      return m_writeableSubresources[Face] & (1u << MipLevel);
-    }
-
-    inline void MarkSubresourceUnmapped(UINT Face, UINT MipLevel) {
-      m_writeableSubresources[Face] &= ~(1u << MipLevel);
-    }
-
-    inline UINT CalcSubresource(UINT Face, UINT MipLevel) const {
-      return Face * m_desc.MipLevels + MipLevel;
-    }
-
-    bool AllocBuffers(UINT Face, UINT MipLevel);
-
-    Rc<DxvkBuffer> GetMappedBuffer(UINT Subresource) {
-      return m_mappingBuffers.at(Subresource);
-    }
-
-    Rc<DxvkBuffer> GetFixupBuffer(UINT Subresource) {
-      return m_fixupBuffers.at(Subresource);
-    }
-
-    bool IsWriteOnly() {
-      return m_desc.Usage & D3DUSAGE_WRITEONLY;
-    }
-
-    bool ShouldShadow() {
+    /**
+     * \brief Shadow
+     * \returns Whether the texture is to be depth compared
+     */
+    bool IsShadow() const {
       return m_shadow;
     }
 
-    void DeallocMappingBuffers();
-    void DeallocFixupBuffers();
-    void DeallocMappingBuffer(UINT Subresource);
-    void DeallocFixupBuffer(UINT Subresource);
+    /**
+     * \brief Subresource
+     * \returns The subresource idx of a given face and mip level
+     */
+    UINT CalcSubresource(UINT Face, UINT MipLevel) const {
+      return Face * m_desc.MipLevels + MipLevel;
+    }
+
+    /**
+     * \brief Creates buffers
+     * Creates mapping and staging buffers for all subresources
+     * allocates new buffers if necessary
+     */
+    void CreateBuffers() {
+      const uint32_t count = CountSubresources();
+      for (uint32_t i = 0; i < count; i++)
+        CreateBufferSubresource(i);
+    }
+
+    /**
+     * \brief Creates a buffer
+     * Creates mapping and staging buffers for a given subresource
+     * allocates new buffers if necessary
+     * \returns Whether an allocation happened
+     */
+    bool CreateBufferSubresource(UINT Subresource);
+
+    /**
+     * \brief Destroys a buffer
+     * Destroys mapping and staging buffers for a given subresource
+     */
+    void DestroyBufferSubresource(UINT Subresource) {
+      m_buffers[Subresource] = nullptr;
+    }
+
+    /**
+     * \brief Managed
+     * \returns Whether a resource is managed (pool) or not
+     */
+    bool IsManaged() const {
+      return IsPoolManaged(m_desc.Pool);
+    }
+
+    /**
+     * \brief Autogen Mipmap
+     * \returns Whether the texture is to have automatic mip generation
+     */
+    bool IsAutomaticMip() const {
+      return m_desc.Usage & D3DUSAGE_AUTOGENMIPMAP;
+    }
+
+    /**
+     * \brief Autogen Mipmap
+     * \returns Whether the texture is to have automatic mip generation
+     */
+    const D3D9ViewSet& GetViews() const {
+      return m_views;
+    }
+
+    /**
+     * \brief Recreate main image view
+     * Recreates the main view of the sampler w/ a specific LOD.
+     * SetLOD only works on MANAGED textures so this is A-okay.
+     */
+    void RecreateSampledView(UINT Lod) {
+      const D3D9_VK_FORMAT_MAPPING formatInfo = m_device->LookupFormat(m_desc.Format);
+
+      m_views.Sample = CreateColorViewPair(formatInfo, AllLayers, VK_IMAGE_USAGE_SAMPLED_BIT, Lod);
+    }
+
+    /**
+     * \brief Extent
+     * \returns The extent of the top-level mip
+     */
+    VkExtent3D GetExtent() const {
+      return VkExtent3D{ m_desc.Width, m_desc.Height, m_desc.Depth };
+    }
+
+    /**
+     * \brief Mip Extent
+     * \returns The extent of a mip or subresource
+     */
+    VkExtent3D GetExtentMip(UINT Subresource) const {
+      UINT MipLevel = Subresource % m_desc.MipLevels;
+      return util::computeMipLevelExtent(GetExtent(), MipLevel);
+    }
+
+    bool MarkHazardous() {
+      return std::exchange(m_views.Hazardous, true);
+    }
+
+    D3DRESOURCETYPE GetType() {
+      return m_type;
+    }
+
+    void MarkSystemMemGPUModified() {
+      m_systemmemModified = true;
+    }
+    void UnmarkSystemMemGPUModified() {
+      m_systemmemModified = false;
+    }
+
+    bool GetSystemMemGPUModified() {
+      return m_systemmemModified;
+    }
+
+    bool MarkLocked(UINT Subresource, bool value) { return std::exchange(m_locked[Subresource], value); }
 
   private:
 
-    D3D9DeviceEx*        m_device;
-    D3D9TextureDesc      m_desc;
-    D3D9_COMMON_TEXTURE_MAP_MODE m_mapMode;
+    D3D9DeviceEx*                 m_device;
+    D3D9_COMMON_TEXTURE_DESC      m_desc;
+    D3DRESOURCETYPE               m_type;
+    D3D9_COMMON_TEXTURE_MAP_MODE  m_mapMode;
 
-    Rc<DxvkImage>   m_image;
+    Rc<DxvkImage>                 m_image;
+    Rc<DxvkImage>                 m_resolveImage;
+    D3D9SubresourceArray<
+      Rc<DxvkBuffer>>             m_buffers;
+    D3D9SubresourceArray<
+      DxvkBufferSliceHandle>      m_mappedSlices;
+    D3D9SubresourceArray<DWORD>   m_lockFlags;
 
-    Rc<DxvkImage>   m_resolveImage;
+    D3D9ViewSet                   m_views;
 
-    std::vector<Rc<DxvkBuffer>>       m_mappingBuffers;
-    std::vector<Rc<DxvkBuffer>>       m_fixupBuffers;
+    VkFormat                      m_format;
 
-    Rc<DxvkImageView>                 m_imageView;
-    Rc<DxvkImageView>                 m_imageViewSrgb;
+    bool                          m_shadow; //< Depth Compare-ness
 
-    std::array<Rc<DxvkImageView>, 6>  m_imageViewFaces;
-    std::array<Rc<DxvkImageView>, 6>  m_imageViewSrgbFaces;
+    int64_t                       m_size = 0;
 
-    Rc<DxvkImageView>                 m_mipGenView;
+    bool                          m_systemmemModified = false;
 
-    std::array<Rc<DxvkImageView>, 6>  m_renderTargetView;
-    std::array<Rc<DxvkImageView>, 6>  m_renderTargetViewSrgb;
+    D3D9SubresourceArray<
+      bool>                       m_locked = { };
 
-    std::array<Rc<DxvkImageView>, 6>  m_depthStencilView;
+    /**
+     * \brief Mip level
+     * \returns Size of packed mip level in bytes
+     */
+    VkDeviceSize GetMipSize(UINT Subresource) const;
 
-    std::array<uint16_t, 6>           m_writeableSubresources = { 0 };
+    Rc<DxvkImage> CreatePrimaryImage(D3DRESOURCETYPE ResourceType) const;
 
-    bool                              m_shadow               = false;
+    Rc<DxvkImage> CreateResolveImage() const;
 
-    int64_t                           m_size                 = 0;
+    BOOL DetermineShadowState() const;
 
     BOOL CheckImageSupport(
       const DxvkImageCreateInfo*  pImageInfo,
-      VkImageTiling         Tiling) const;
-
-    BOOL CalcShadowState() const;
-
-    int64_t CalcMemoryConsumption() const;
-
-    BOOL CheckFormatFeatureSupport(
-      VkFormat              Format,
-      VkFormatFeatureFlags  Features) const;
+            VkImageTiling         Tiling) const;
 
     VkImageUsageFlags EnableMetaCopyUsage(
-      VkFormat              Format,
-      VkImageTiling         Tiling) const;
+            VkFormat              Format,
+            VkImageTiling         Tiling) const;
 
-    VkImageUsageFlags EnableMetaPackUsage(
-      VkFormat              Format,
-      BOOL                  WriteOnly) const;
+    D3D9_COMMON_TEXTURE_MAP_MODE DetermineMapMode() const {
+      if (m_desc.Format == D3D9Format::NULL_FORMAT)
+        return D3D9_COMMON_TEXTURE_MAP_MODE_NONE;
 
-    D3D9_COMMON_TEXTURE_MAP_MODE DetermineMapMode(
-      const DxvkImageCreateInfo*  pImageInfo) const;
+      if (m_desc.Pool == D3DPOOL_SYSTEMMEM || m_desc.Pool == D3DPOOL_SCRATCH)
+        return D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM;
+
+      return D3D9_COMMON_TEXTURE_MAP_MODE_BACKED;
+    }
 
     static VkImageType GetImageTypeFromResourceType(
-      D3DRESOURCETYPE       Type);
+            D3DRESOURCETYPE  Dimension);
+
+    static VkImageViewType GetImageViewTypeFromResourceType(
+            D3DRESOURCETYPE  Dimension,
+            UINT             Layer);
 
     static VkImageLayout OptimizeLayout(
-      VkImageUsageFlags         Usage);
+            VkImageUsageFlags         Usage);
+
+    static constexpr UINT AllLayers = UINT32_MAX;
 
     Rc<DxvkImageView> CreateView(
-      D3D9_VK_FORMAT_MAPPING FormatInfo,
-      int32_t                Index,
-      VkImageUsageFlags      UsageFlags,
-      bool                   Srgb,
-      UINT                   Lod);
+            D3D9_VK_FORMAT_MAPPING FormatInfo,
+            UINT                   Layer,
+            VkImageUsageFlags      UsageFlags,
+            UINT                   Lod,
+            BOOL                   Srgb);
 
+    D3D9ColorView CreateColorViewPair(
+            D3D9_VK_FORMAT_MAPPING FormatInfo,
+            UINT                   Layer,
+            VkImageUsageFlags      UsageFlags,
+            UINT                   Lod);
+
+    void CreateInitialViews();
   };
 
 }

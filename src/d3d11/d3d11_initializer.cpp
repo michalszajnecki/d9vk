@@ -60,10 +60,8 @@ namespace dxvk {
       m_transferMemory   += bufferSlice.length();
       m_transferCommands += 1;
       
-      m_context->updateBuffer(
+      m_context->uploadBuffer(
         bufferSlice.buffer(),
-        bufferSlice.offset(),
-        bufferSlice.length(),
         pInitialData->pSysMem);
     } else {
       m_transferCommands += 1;
@@ -116,16 +114,13 @@ namespace dxvk {
       // pInitialData is an array that stores an entry for
       // every single subresource. Since we will define all
       // subresources, this counts as initialization.
-      VkImageSubresourceLayers subresourceLayers;
-      subresourceLayers.aspectMask     = formatInfo->aspectMask;
-      subresourceLayers.mipLevel       = 0;
-      subresourceLayers.baseArrayLayer = 0;
-      subresourceLayers.layerCount     = 1;
-      
       for (uint32_t layer = 0; layer < image->info().numLayers; layer++) {
         for (uint32_t level = 0; level < image->info().mipLevels; level++) {
-          subresourceLayers.baseArrayLayer = layer;
+          VkImageSubresourceLayers subresourceLayers;
+          subresourceLayers.aspectMask     = formatInfo->aspectMask;
           subresourceLayers.mipLevel       = level;
+          subresourceLayers.baseArrayLayer = layer;
+          subresourceLayers.layerCount     = 1;
           
           const uint32_t id = D3D11CalcSubresource(
             level, layer, image->info().mipLevels);
@@ -138,10 +133,8 @@ namespace dxvk {
             image->info().format, mipLevelExtent);
           
           if (formatInfo->aspectMask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-            m_context->updateImage(
+            m_context->uploadImage(
               image, subresourceLayers,
-              mipLevelOffset,
-              mipLevelExtent,
               pInitialData[id].pSysMem,
               pInitialData[id].SysMemPitch,
               pInitialData[id].SysMemSlicePitch);
@@ -154,6 +147,12 @@ namespace dxvk {
               pInitialData[id].SysMemPitch,
               pInitialData[id].SysMemSlicePitch,
               packedFormat);
+          }
+
+          if (pTexture->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_BUFFER) {
+            util::packImageData(pTexture->GetMappedBuffer(id)->mapPtr(0), pInitialData[id].pSysMem,
+              util::computeBlockCount(image->mipLevelExtent(level), formatInfo->blockSize),
+              formatInfo->elementSize, pInitialData[id].SysMemPitch, pInitialData[id].SysMemSlicePitch);
           }
         }
       }
@@ -181,7 +180,7 @@ namespace dxvk {
             image, value, subresources);
         } else {
           VkClearDepthStencilValue value;
-          value.depth   = 1.0f;
+          value.depth   = 0.0f;
           value.stencil = 0;
           
           m_context->clearDepthStencilImage(

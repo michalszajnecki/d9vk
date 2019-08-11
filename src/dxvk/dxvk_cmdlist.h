@@ -5,12 +5,12 @@
 #include "dxvk_bind_mask.h"
 #include "dxvk_buffer.h"
 #include "dxvk_descriptor.h"
-#include "dxvk_event.h"
 #include "dxvk_gpu_event.h"
 #include "dxvk_gpu_query.h"
 #include "dxvk_lifetime.h"
 #include "dxvk_limits.h"
 #include "dxvk_pipelayout.h"
+#include "dxvk_signal.h"
 #include "dxvk_staging.h"
 #include "dxvk_stats.h"
 
@@ -25,10 +25,28 @@ namespace dxvk {
   enum class DxvkCmdBuffer : uint32_t {
     InitBuffer = 0,
     ExecBuffer = 1,
+    SdmaBuffer = 2,
   };
   
   using DxvkCmdBufferFlags = Flags<DxvkCmdBuffer>;
   
+  /**
+   * \brief Queue submission info
+   *
+   * Convenience struct that holds data for
+   * actual command submissions. Internal use
+   * only, array sizes are based on need.
+   */
+  struct DxvkQueueSubmission {
+    uint32_t              waitCount;
+    VkSemaphore           waitSync[2];
+    VkPipelineStageFlags  waitMask[2];
+    uint32_t              wakeCount;
+    VkSemaphore           wakeSync[2];
+    uint32_t              cmdBufferCount;
+    VkCommandBuffer       cmdBuffers[4];
+  };
+
   /**
    * \brief DXVK command list
    * 
@@ -42,9 +60,7 @@ namespace dxvk {
     
   public:
     
-    DxvkCommandList(
-            DxvkDevice*       device,
-            uint32_t          queueFamily);
+    DxvkCommandList(DxvkDevice* device);
     ~DxvkCommandList();
     
     /**
@@ -56,7 +72,6 @@ namespace dxvk {
      * \returns Submission status
      */
     VkResult submit(
-            VkQueue         queue,
             VkSemaphore     waitSemaphore,
             VkSemaphore     wakeSemaphore);
     
@@ -136,16 +151,6 @@ namespace dxvk {
     }
     
     /**
-     * \brief Adds an event revision to track
-     * 
-     * The event will be signaled after the command
-     * buffer has finished executing on the GPU.
-     */
-    void trackEvent(const DxvkEventRevision& event) {
-      m_eventTracker.trackEvent(event);
-    }
-
-    /**
      * \brief Tracks a descriptor pool
      * \param [in] pool The descriptor pool
      */
@@ -176,13 +181,20 @@ namespace dxvk {
     }
     
     /**
-     * \brief Signals tracked events
+     * \brief Queues signal
      * 
-     * Marks all tracked events as signaled. Call this after
-     * synchronizing with a fence for this command list.
+     * The signal will be notified once the command
+     * buffer has finished executing on the GPU.
      */
-    void signalEvents() {
-      m_eventTracker.signalEvents();
+    void queueSignal(const Rc<sync::Signal>& signal) {
+      m_signalTracker.add(signal);
+    }
+
+    /**
+     * \brief Notifies signals
+     */
+    void notifySignals() {
+      m_signalTracker.notify();
     }
     
     /**
@@ -364,36 +376,45 @@ namespace dxvk {
     
     
     void cmdCopyBuffer(
+            DxvkCmdBuffer           cmdBuffer,
             VkBuffer                srcBuffer,
             VkBuffer                dstBuffer,
             uint32_t                regionCount,
       const VkBufferCopy*           pRegions) {
-      m_vkd->vkCmdCopyBuffer(m_execBuffer,
+      m_cmdBuffersUsed.set(cmdBuffer);
+
+      m_vkd->vkCmdCopyBuffer(getCmdBuffer(cmdBuffer),
         srcBuffer, dstBuffer,
         regionCount, pRegions);
     }
     
     
     void cmdCopyBufferToImage(
+            DxvkCmdBuffer           cmdBuffer,
             VkBuffer                srcBuffer,
             VkImage                 dstImage,
             VkImageLayout           dstImageLayout,
             uint32_t                regionCount,
       const VkBufferImageCopy*      pRegions) {
-      m_vkd->vkCmdCopyBufferToImage(m_execBuffer,
+      m_cmdBuffersUsed.set(cmdBuffer);
+
+      m_vkd->vkCmdCopyBufferToImage(getCmdBuffer(cmdBuffer),
         srcBuffer, dstImage, dstImageLayout,
         regionCount, pRegions);
     }
     
     
     void cmdCopyImage(
+            DxvkCmdBuffer           cmdBuffer,
             VkImage                 srcImage,
             VkImageLayout           srcImageLayout,
             VkImage                 dstImage,
             VkImageLayout           dstImageLayout,
             uint32_t                regionCount,
       const VkImageCopy*            pRegions) {
-      m_vkd->vkCmdCopyImage(m_execBuffer,
+      m_cmdBuffersUsed.set(cmdBuffer);
+
+      m_vkd->vkCmdCopyImage(getCmdBuffer(cmdBuffer),
         srcImage, srcImageLayout,
         dstImage, dstImageLayout,
         regionCount, pRegions);
@@ -401,12 +422,15 @@ namespace dxvk {
     
     
     void cmdCopyImageToBuffer(
+            DxvkCmdBuffer           cmdBuffer,
             VkImage                 srcImage,
             VkImageLayout           srcImageLayout,
             VkBuffer                dstBuffer,
             uint32_t                regionCount,
       const VkBufferImageCopy*      pRegions) {
-      m_vkd->vkCmdCopyImageToBuffer(m_execBuffer,
+      m_cmdBuffersUsed.set(cmdBuffer);
+
+      m_vkd->vkCmdCopyImageToBuffer(getCmdBuffer(cmdBuffer),
         srcImage, srcImageLayout, dstBuffer,
         regionCount, pRegions);
     }
@@ -722,48 +746,42 @@ namespace dxvk {
         pipelineStage, queryPool, query);
     }
     
-    
-    DxvkStagingBufferSlice stagedAlloc(
-            VkDeviceSize            size);
-    
-    
-    void stagedBufferCopy(
-            DxvkCmdBuffer           cmdBuffer,
-            VkBuffer                dstBuffer,
-            VkDeviceSize            dstOffset,
-            VkDeviceSize            dataSize,
-      const DxvkStagingBufferSlice& dataSlice);
-    
-    
-    void stagedBufferImageCopy(
-            VkImage                 dstImage,
-            VkImageLayout           dstImageLayout,
-      const VkBufferImageCopy&      dstImageRegion,
-      const DxvkStagingBufferSlice& dataSlice);
-    
   private:
     
+    DxvkDevice*         m_device;
     Rc<vk::DeviceFn>    m_vkd;
     
     VkFence             m_fence;
     
-    VkCommandPool       m_pool;
-    VkCommandBuffer     m_execBuffer;
-    VkCommandBuffer     m_initBuffer;
+    VkCommandPool       m_graphicsPool = VK_NULL_HANDLE;
+    VkCommandPool       m_transferPool = VK_NULL_HANDLE;
+    
+    VkCommandBuffer     m_execBuffer = VK_NULL_HANDLE;
+    VkCommandBuffer     m_initBuffer = VK_NULL_HANDLE;
+    VkCommandBuffer     m_sdmaBuffer = VK_NULL_HANDLE;
+
+    VkSemaphore         m_sdmaSemaphore = VK_NULL_HANDLE;
     
     DxvkCmdBufferFlags  m_cmdBuffersUsed;
     DxvkLifetimeTracker m_resources;
     DxvkDescriptorPoolTracker m_descriptorPoolTracker;
-    DxvkStagingAlloc    m_stagingAlloc;
-    DxvkEventTracker    m_eventTracker;
+    DxvkSignalTracker   m_signalTracker;
     DxvkGpuEventTracker m_gpuEventTracker;
     DxvkGpuQueryTracker m_gpuQueryTracker;
     DxvkBufferTracker   m_bufferTracker;
     DxvkStatCounters    m_statCounters;
 
     VkCommandBuffer getCmdBuffer(DxvkCmdBuffer cmdBuffer) const {
-      return cmdBuffer == DxvkCmdBuffer::ExecBuffer ? m_execBuffer : m_initBuffer;
+      if (cmdBuffer == DxvkCmdBuffer::ExecBuffer) return m_execBuffer;
+      if (cmdBuffer == DxvkCmdBuffer::InitBuffer) return m_initBuffer;
+      if (cmdBuffer == DxvkCmdBuffer::SdmaBuffer) return m_sdmaBuffer;
+      return VK_NULL_HANDLE;
     }
+
+    VkResult submitToQueue(
+            VkQueue               queue,
+            VkFence               fence,
+      const DxvkQueueSubmission&  info);
     
   };
   

@@ -50,9 +50,12 @@ namespace dxvk {
     // Decide whether we need to create a pass-through
     // geometry shader for vertex shader stream output
 
-    m_shader = pModule->compile(*pDxsoModuleInfo, name, AnalysisInfo);
-    m_isgn   = pModule->isgn();
+    m_shader       = pModule->compile(*pDxsoModuleInfo, name, AnalysisInfo);
+    m_isgn         = pModule->isgn();
+    m_usedSamplers = pModule->usedSamplers();
+    m_usedRTs      = pModule->usedRTs();
 
+    m_info      = pModule->info();
     m_meta      = pModule->meta();
     m_constants = pModule->constants();
 
@@ -68,6 +71,7 @@ namespace dxvk {
 
     pDevice->GetDXVKDevice()->registerShader(m_shader);
   }
+
 
   D3D9CommonShader D3D9ShaderModuleSet::GetShaderModule(
             D3D9DeviceEx*         pDevice,

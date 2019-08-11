@@ -20,7 +20,7 @@ namespace dxvk {
 
     // Comment ops have their own system for getting length.
     if (opcode == DxsoOpcode::Comment)
-      return (token & 0x7fff000) >> 16;
+      return (token & 0x7fff0000) >> 16;
 
     if (opcode == DxsoOpcode::End)
       return 0;
@@ -182,7 +182,7 @@ namespace dxvk {
       case DxsoOpcode::BreakP: {
         uint32_t sourceIdx = 0;
         for (uint32_t i = 0; i < tokenLength; i++) {
-          if (this->decodeSourceRegister(i, iter))
+          if (this->decodeSourceRegister(sourceIdx, iter))
             i++;
 
           sourceIdx++;

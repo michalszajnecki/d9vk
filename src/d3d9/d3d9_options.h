@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../util/config/config.h"
+#include "../dxvk/dxvk_device.h"
 
 #include "d3d9_include.h"
 
@@ -8,7 +9,7 @@ namespace dxvk {
 
   struct D3D9Options {
 
-    D3D9Options(const Config& config);
+    D3D9Options(const Rc<DxvkDevice>& device, const Config& config);
 
     /// Override PCI vendor and device IDs reported to the
     /// application. This may make apps think they are running
@@ -32,6 +33,11 @@ namespace dxvk {
 
     /// Whether or not to set the process as DPI aware in Windows when the API interface is created.
     bool dpiAware;
+    
+    /// Handle D3DLOCK_READONLY properly.
+    ///
+    /// Risen 1 writes to buffers mapped with readonly.
+    bool allowLockFlagReadonly;
 
     /// True:  Copy our constant set into UBO if we are relative indexing ever.
     /// False: Copy our constant set into UBO if we are relative indexing at the start of a defined constant
@@ -50,6 +56,25 @@ namespace dxvk {
 
     /// Defer surface creation
     bool deferSurfaceCreation;
+
+    /// R/W Framebuffer + Texture Hazards
+    bool hasHazards;
+
+    /// Whether to use the submission thread for presentation.
+    /// May increase performance in some games with some drivers.
+    Tristate asyncPresent;
+
+    /// Anisotropic filter override
+    ///
+    /// Enforces anisotropic filtering with the
+    /// given anisotropy value for all samplers.
+    int32_t samplerAnisotropy;
+
+    /// Max available memory override
+    ///
+    /// Changes the max initial value used in
+    /// tracking and GetAvailableTextureMem
+    uint32_t maxAvailableMemory;
   };
 
 }

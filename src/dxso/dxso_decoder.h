@@ -4,9 +4,12 @@
 #include "dxso_enums.h"
 #include "dxso_code.h"
 
-#include "dxso_util.h"
-
 namespace dxvk {
+
+  constexpr size_t DxsoMaxTempRegs      = 32;
+  constexpr size_t DxsoMaxTextureRegs   = 10;
+  constexpr size_t DxsoMaxInterfaceRegs = 16;
+  constexpr size_t DxsoMaxOperandCount  = 8;
 
   constexpr uint32_t DxsoRegModifierShift = 24;
 
@@ -21,10 +24,10 @@ namespace dxvk {
   enum class DxsoRegModifier : uint32_t {
     None    = 0,  // r
     Neg     = 1,  // -r
-    Bias    = 2,  // Exponent Bias (treating as r)
-    BiasNeg = 3,  // Exponent Bias (treating as -r)
-    Sign    = 4,  // Sign (treating as r)
-    SignNeg = 5,  // Sign (treating as -r)
+    Bias    = 2,  // r - 0.5
+    BiasNeg = 3,  // -(r - 0.5)
+    Sign    = 4,  // fma(r, 2.0f, -1.0f)
+    SignNeg = 5,  // -fma(r, 2.0f, -1.0f)
     Comp    = 6,  // 1 - r
     X2      = 7,  // r * 2
     X2Neg   = 8,  // -r * 2

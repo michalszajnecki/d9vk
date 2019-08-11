@@ -16,28 +16,22 @@ namespace dxvk {
     m_extensions        (extensions),
     m_features          (features),
     m_properties        (adapter->deviceProperties()),
+    m_perfHints         (getPerfHints()),
     m_memory            (new DxvkMemoryAllocator    (this)),
     m_renderPassPool    (new DxvkRenderPassPool     (vkd)),
     m_pipelineManager   (new DxvkPipelineManager    (this, m_renderPassPool.ptr())),
     m_gpuEventPool      (new DxvkGpuEventPool       (vkd)),
     m_gpuQueryPool      (new DxvkGpuQueryPool       (this)),
     m_metaClearObjects  (new DxvkMetaClearObjects   (vkd)),
-    m_metaCopyObjects   (new DxvkMetaCopyObjects    (vkd)),
+    m_metaCopyObjects   (new DxvkMetaCopyObjects    (this)),
     m_metaResolveObjects(new DxvkMetaResolveObjects (this)),
-    m_metaMipGenObjects (new DxvkMetaMipGenObjects  (vkd)),
+    m_metaMipGenObjects (new DxvkMetaMipGenObjects  (this)),
     m_metaPackObjects   (new DxvkMetaPackObjects    (vkd)),
     m_unboundResources  (this),
     m_submissionQueue   (this) {
-    m_graphicsQueue.queueFamily = m_adapter->graphicsQueueFamily();
-    m_presentQueue.queueFamily  = m_adapter->presentQueueFamily();
-    
-    m_vkd->vkGetDeviceQueue(m_vkd->device(),
-      m_graphicsQueue.queueFamily, 0,
-      &m_graphicsQueue.queueHandle);
-    
-    m_vkd->vkGetDeviceQueue(m_vkd->device(),
-      m_presentQueue.queueFamily, 0,
-      &m_presentQueue.queueHandle);
+    auto queueFamilies = m_adapter->findQueueFamilies();
+    m_queues.graphics = getQueue(queueFamilies.graphics, 0);
+    m_queues.transfer = getQueue(queueFamilies.transfer, 0);
   }
   
   
@@ -73,57 +67,11 @@ namespace dxvk {
   }
   
   
-  Rc<DxvkStagingBuffer> DxvkDevice::allocStagingBuffer(VkDeviceSize size) {
-    // In case we need a standard-size staging buffer, try
-    // to recycle an old one that has been returned earlier
-    if (size <= DefaultStagingBufferSize) {
-      const Rc<DxvkStagingBuffer> buffer
-        = m_recycledStagingBuffers.retrieveObject();
-      
-      if (buffer != nullptr)
-        return buffer;
-    }
-    
-    // Staging buffers only need to be able to handle transfer
-    // operations, and they need to be in host-visible memory.
-    DxvkBufferCreateInfo info;
-    info.size   = size;
-    info.usage  = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT
-                | VK_PIPELINE_STAGE_HOST_BIT;
-    info.access = VK_ACCESS_TRANSFER_READ_BIT
-                | VK_ACCESS_HOST_WRITE_BIT;
-    
-    VkMemoryPropertyFlags memFlags
-      = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-      | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    
-    // Don't create buffers that are too small. A staging
-    // buffer should be able to serve multiple uploads.
-    if (info.size < DefaultStagingBufferSize)
-      info.size = DefaultStagingBufferSize;
-    
-    return new DxvkStagingBuffer(this->createBuffer(info, memFlags));
-  }
-  
-  
-  void DxvkDevice::recycleStagingBuffer(const Rc<DxvkStagingBuffer>& buffer) {
-    // Drop staging buffers that are bigger than the
-    // standard ones to save memory, recycle the rest
-    if (buffer->size() == DefaultStagingBufferSize) {
-      m_recycledStagingBuffers.returnObject(buffer);
-      buffer->reset();
-    }
-  }
-  
-  
   Rc<DxvkCommandList> DxvkDevice::createCommandList() {
     Rc<DxvkCommandList> cmdList = m_recycledCommandLists.retrieveObject();
     
-    if (cmdList == nullptr) {
-      cmdList = new DxvkCommandList(this,
-        m_adapter->graphicsQueueFamily());
-    }
+    if (cmdList == nullptr)
+      cmdList = new DxvkCommandList(this);
     
     return cmdList;
   }
@@ -239,6 +187,7 @@ namespace dxvk {
     result.setCtr(DxvkStatCounter::PipeCountGraphics, pipe.numGraphicsPipelines);
     result.setCtr(DxvkStatCounter::PipeCountCompute,  pipe.numComputePipelines);
     result.setCtr(DxvkStatCounter::PipeCompilerBusy,  m_pipelineManager->isCompilingShaders());
+    result.setCtr(DxvkStatCounter::GpuIdleTicks,      m_submissionQueue.gpuIdleTicks());
     result.setCtr(DxvkStatCounter::SamplerCount,      m_numSamplers.load());
 
     std::lock_guard<sync::Spinlock> lock(m_statLock);
@@ -262,20 +211,19 @@ namespace dxvk {
   }
   
   
-  VkResult DxvkDevice::presentImage(
+  void DxvkDevice::presentImage(
     const Rc<vk::Presenter>&        presenter,
-          VkSemaphore               semaphore) {
+          VkSemaphore               semaphore,
+          DxvkSubmitStatus*         status) {
+    status->result = VK_NOT_READY;
+
     DxvkPresentInfo presentInfo;
     presentInfo.presenter = presenter;
     presentInfo.waitSync  = semaphore;
-    VkResult status = m_submissionQueue.present(presentInfo);
-
-    if (status != VK_SUCCESS)
-      return status;
+    m_submissionQueue.present(presentInfo, status);
     
     std::lock_guard<sync::Spinlock> statLock(m_statLock);
     m_statCounters.addCtr(DxvkStatCounter::QueuePresentCount, 1);
-    return status;
   }
 
 
@@ -285,7 +233,6 @@ namespace dxvk {
           VkSemaphore               wakeSync) {
     DxvkSubmitInfo submitInfo;
     submitInfo.cmdList  = commandList;
-    submitInfo.queue    = m_graphicsQueue.queueHandle;
     submitInfo.waitSync = waitSync;
     submitInfo.wakeSync = wakeSync;
     m_submissionQueue.submit(submitInfo);
@@ -293,6 +240,18 @@ namespace dxvk {
     std::lock_guard<sync::Spinlock> statLock(m_statLock);
     m_statCounters.merge(commandList->statCounters());
     m_statCounters.addCtr(DxvkStatCounter::QueueSubmitCount, 1);
+  }
+  
+  
+  VkResult DxvkDevice::waitForSubmission(DxvkSubmitStatus* status) {
+    VkResult result = status->result.load();
+
+    if (result == VK_NOT_READY) {
+      m_submissionQueue.synchronizeSubmission(status);
+      result = status->result.load();
+    }
+
+    return result;
   }
   
   
@@ -304,6 +263,14 @@ namespace dxvk {
   }
   
   
+  DxvkDevicePerfHints DxvkDevice::getPerfHints() {
+    DxvkDevicePerfHints hints;
+    hints.preferFbDepthStencilCopy = m_extensions.extShaderStencilExport
+      && m_adapter->matchesDriver(DxvkGpuVendor::Amd, VK_DRIVER_ID_MESA_RADV_KHR, 0, 0);
+    return hints;
+  }
+
+
   void DxvkDevice::recycleCommandList(const Rc<DxvkCommandList>& cmdList) {
     m_recycledCommandLists.returnObject(cmdList);
   }
@@ -311,6 +278,15 @@ namespace dxvk {
 
   void DxvkDevice::recycleDescriptorPool(const Rc<DxvkDescriptorPool>& pool) {
     m_recycledDescriptorPools.returnObject(pool);
+  }
+
+
+  DxvkDeviceQueue DxvkDevice::getQueue(
+          uint32_t                family,
+          uint32_t                index) const {
+    VkQueue queue = VK_NULL_HANDLE;
+    m_vkd->vkGetDeviceQueue(m_vkd->device(), family, index, &queue);
+    return DxvkDeviceQueue { queue, family, index };
   }
   
 }

@@ -10,9 +10,10 @@ namespace dxvk {
           D3D9DeviceEx*      pDevice,
           DWORD              FVF)
     : D3D9VertexDeclBase(pDevice) {
-    m_elements.reserve(16);
     this->SetFVF(FVF);
+    this->Classify();
   }
+
 
   D3D9VertexDecl::D3D9VertexDecl(
           D3D9DeviceEx*      pDevice,
@@ -21,8 +22,10 @@ namespace dxvk {
     : D3D9VertexDeclBase( pDevice )
     , m_elements        ( DeclCount )
     , m_fvf             ( 0 ) {
-    std::memcpy(m_elements.data(), pVertexElements, sizeof(D3DVERTEXELEMENT9) * DeclCount);
+    std::copy(pVertexElements, pVertexElements + DeclCount, m_elements.begin());
+    this->Classify();
   }
+
 
   HRESULT STDMETHODCALLTYPE D3D9VertexDecl::QueryInterface(
           REFIID  riid,
@@ -43,26 +46,25 @@ namespace dxvk {
     return E_NOINTERFACE;
   }
 
+
   HRESULT STDMETHODCALLTYPE D3D9VertexDecl::GetDeclaration(
           D3DVERTEXELEMENT9* pElement,
           UINT*              pNumElements) {
     if (pNumElements == nullptr)
       return D3DERR_INVALIDCALL;
 
-    if (pElement == nullptr) {
-      *pNumElements = m_elements.size();
+    *pNumElements = UINT(m_elements.size()) + 1u; // Account for D3DDECL_END
+
+    if (pElement == nullptr)
       return D3D_OK;
-    }
 
-    const UINT count = std::min(*pNumElements, UINT(m_elements.size()));
-
-    std::memcpy(
-      pElement,
-      m_elements.data(),
-      sizeof(D3DVERTEXELEMENT9) * count);
+    // The native runtime ignores pNumElements here...
+    std::copy(m_elements.begin(), m_elements.end(), pElement);
+    pElement[m_elements.size()] = D3DDECL_END();
 
     return D3D_OK;
   }
+
 
   void D3D9VertexDecl::SetFVF(DWORD FVF) {
     m_fvf = FVF;
@@ -194,13 +196,24 @@ namespace dxvk {
       elements[i].Stream = 0;
       elements[i].Offset = (i == 0) 
         ? 0
-        : (elements[i - 1].Offset + DecltypeSize(D3DDECLTYPE(elements[i - 1].Type)));
+        : (elements[i - 1].Offset + GetDecltypeSize(D3DDECLTYPE(elements[i - 1].Type)));
 
       elements[i].Method = D3DDECLMETHOD_DEFAULT;
     }
 
     m_elements.resize(elemCount);
-    std::memcpy(m_elements.data(), elements.data(), sizeof(D3DVERTEXELEMENT9) * elemCount);
+    std::copy(elements.begin(), elements.begin() + elemCount, m_elements.data());
+  }
+
+  void D3D9VertexDecl::Classify() {
+    for (const auto& element : m_elements) {
+      if (element.Usage == D3DDECLUSAGE_COLOR && element.UsageIndex == 0)
+        m_flags.set(D3D9VertexDeclFlag::HasColor0);
+      else if (element.Usage == D3DDECLUSAGE_COLOR && element.UsageIndex == 1)
+        m_flags.set(D3D9VertexDeclFlag::HasColor1);
+      else if (element.Usage == D3DDECLUSAGE_POSITIONT)
+        m_flags.set(D3D9VertexDeclFlag::HasPositionT);
+    }
   }
 
 }

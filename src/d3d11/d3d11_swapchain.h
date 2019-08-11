@@ -113,12 +113,18 @@ namespace dxvk {
 
     D3D11Texture2D*         m_backBuffer = nullptr;
 
+    DxvkSubmitStatus        m_presentStatus;
+
     std::vector<Rc<DxvkImageView>> m_imageViews;
 
     bool                    m_dirty = true;
     bool                    m_vsync = true;
 
+    bool                    m_asyncPresent = false;
+
     void PresentImage(UINT SyncInterval);
+
+    void SynchronizePresent();
 
     void FlushImmediateContext();
     
@@ -138,6 +144,8 @@ namespace dxvk {
     void DestroyGammaTexture();
     
     void CreateHud();
+
+    void InitOptions();
 
     void InitRenderState();
 

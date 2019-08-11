@@ -34,6 +34,7 @@ namespace dxvk {
     InitRenderState();
     InitSamplers();
     InitShaders();
+    InitOptions();
   }
 
 
@@ -194,15 +195,17 @@ namespace dxvk {
 
 
   void D3D11SwapChain::PresentImage(UINT SyncInterval) {
-    // Wait for the sync event so that we
-    // respect the maximum frame latency
-    Rc<DxvkEvent> syncEvent = m_dxgiDevice->GetFrameSyncEvent(m_desc.BufferCount);
+    // Wait for the sync event so that we respect the maximum frame latency
+    auto syncEvent = m_dxgiDevice->GetFrameSyncEvent(m_desc.BufferCount);
     syncEvent->wait();
     
     if (m_hud != nullptr)
       m_hud->update();
 
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
+      if (m_asyncPresent)
+        SynchronizePresent();
+
       m_context->beginRecording(
         m_device->createCommandList());
       
@@ -290,32 +293,41 @@ namespace dxvk {
       m_context->bindResourceView(BindingIds::Image, m_swapImageView, nullptr);
       m_context->bindResourceView(BindingIds::Gamma, m_gammaTextureView, nullptr);
 
-      m_context->draw(4, 1, 0, 0);
+      m_context->draw(3, 1, 0, 0);
 
       if (m_hud != nullptr)
         m_hud->render(m_context, info.imageExtent);
       
-      if (i + 1 >= SyncInterval) {
-        DxvkEventRevision eventRev;
-        eventRev.event    = syncEvent;
-        eventRev.revision = syncEvent->reset();
-        m_context->signalEvent(eventRev);
-      }
+      if (i + 1 >= SyncInterval)
+        m_context->queueSignal(syncEvent);
 
       m_device->submitCommandList(
         m_context->endRecording(),
         sync.acquire, sync.present);
       
-      status = m_device->presentImage(
-        m_presenter, sync.present);
-      
-      if (status != VK_SUCCESS)
-        RecreateSwapChain(m_vsync);
+      m_device->presentImage(m_presenter,
+        sync.present, &m_presentStatus);
+
+      if (!m_asyncPresent)
+        SynchronizePresent();
     }
   }
 
-  
+
+  void D3D11SwapChain::SynchronizePresent() {
+    // Recreate swap chain if the previous present call failed
+    VkResult status = m_device->waitForSubmission(&m_presentStatus);
+    
+    if (status != VK_SUCCESS)
+      RecreateSwapChain(m_vsync);
+  }
+
+
   void D3D11SwapChain::RecreateSwapChain(BOOL Vsync) {
+    // Ensure that we can safely destroy the swap chain
+    m_device->waitForSubmission(&m_presentStatus);
+    m_presentStatus.result = VK_SUCCESS;
+
     vk::PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = { m_desc.Width, m_desc.Height };
     presenterDesc.imageCount      = PickImageCount(m_desc.BufferCount + 1);
@@ -330,7 +342,7 @@ namespace dxvk {
 
 
   void D3D11SwapChain::CreatePresenter() {
-    DxvkDeviceQueue graphicsQueue = m_device->graphicsQueue();
+    DxvkDeviceQueue graphicsQueue = m_device->queues().graphics;
 
     vk::PresenterDevice presenterDevice;
     presenterDevice.queueFamily   = graphicsQueue.queueFamily;
@@ -339,7 +351,7 @@ namespace dxvk {
 
     vk::PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = { m_desc.Width, m_desc.Height };
-    presenterDesc.imageCount      = PickImageCount(m_desc.BufferCount);
+    presenterDesc.imageCount      = PickImageCount(m_desc.BufferCount + 1);
     presenterDesc.numFormats      = PickFormats(m_desc.Format, presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(false, presenterDesc.presentModes);
 
@@ -577,6 +589,16 @@ namespace dxvk {
 
   void D3D11SwapChain::CreateHud() {
     m_hud = hud::Hud::createHud(m_device);
+  }
+
+
+  void D3D11SwapChain::InitOptions() {
+    // Not synchronizing after present seems to increase
+    // the likelyhood of hangs on Nvidia for some reason.
+    m_asyncPresent = !m_device->adapter()->matchesDriver(
+      DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0);
+    
+    applyTristate(m_asyncPresent, m_parent->GetOptions()->asyncPresent);
   }
 
 

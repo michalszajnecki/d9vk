@@ -5,6 +5,7 @@
 #include "dxso_modinfo.h"
 #include "dxso_isgn.h"
 
+#include "../d3d9/d3d9_caps.h"
 #include "../spirv/spirv_module.h"
 
 namespace dxvk {
@@ -103,11 +104,30 @@ namespace dxvk {
     uint32_t typeId = 0;
   };
 
+  enum DxsoSamplerType : uint32_t {
+    SamplerTypeTexture2D = 0,
+    SamplerTypeTexture3D = 1,
+    SamplerTypeTextureCube,
+
+    SamplerTypeCount
+  };
+
+  inline auto SamplerTypeFromTextureType(DxsoTextureType type) {
+    switch (type) {
+      default:
+      case DxsoTextureType::Texture2D:   return SamplerTypeTexture2D;   break;
+      case DxsoTextureType::Texture3D:   return SamplerTypeTexture3D;   break;
+      case DxsoTextureType::TextureCube: return SamplerTypeTextureCube; break;
+    }
+  }
+
   struct DxsoSampler {
-    DxsoSamplerInfo color;
-    DxsoSamplerInfo depth;
+    DxsoSamplerInfo color[SamplerTypeCount];
+    DxsoSamplerInfo depth[SamplerTypeCount];
 
     uint32_t depthSpecConst;
+
+    DxsoTextureType type;
   };
 
   struct DxsoAnalysisInfo;
@@ -134,6 +154,7 @@ namespace dxvk {
    */
   struct DxsoCompilerPsPart {
     uint32_t functionId         = 0;
+    uint32_t samplerTypeSpec    = 0;
 
     //////////////
     // Misc Types
@@ -147,6 +168,10 @@ namespace dxvk {
     ////////////////
     // Depth output
     DxsoRegisterPointer oDepth;
+
+    ////////////////
+    // Shared State
+    uint32_t sharedState        = 0;
 
     uint32_t killState          = 0;
     uint32_t builtinLaneId      = 0;
@@ -214,6 +239,8 @@ namespace dxvk {
 
     const DxsoShaderMetaInfo& meta() { return m_meta; }
     const DxsoDefinedConstants& constants() { return m_constants; }
+    uint32_t usedSamplers() const { return m_usedSamplers; }
+    uint32_t usedRTs() const { return m_usedRTs; }
 
   private:
 
@@ -257,15 +284,15 @@ namespace dxvk {
     // Constant buffer deffed mappings
     std::array<
       DxsoRegisterPointer,
-      256> m_cFloat;
+      caps::MaxFloatConstantsSoftware> m_cFloat;
 
     std::array<
       DxsoRegisterPointer,
-      16> m_cInt;
+      caps::MaxOtherConstantsSoftware> m_cInt;
 
     std::array<
       DxsoRegisterPointer,
-      16> m_cBool;
+      caps::MaxOtherConstantsSoftware> m_cBool;
 
     //////////////////////
     // Loop counter
@@ -313,6 +340,12 @@ namespace dxvk {
     DxsoCompilerVsPart m_vs;
     DxsoCompilerPsPart m_ps;
 
+    //////////////////////////////////////////
+    // Bit masks containing used samplers
+    // and render targets for hazard tracking
+    uint32_t m_usedSamplers;
+    uint32_t m_usedRTs;
+
     //////////////////////////////////////
     // Common function definition methods
     void emitInit();
@@ -327,6 +360,8 @@ namespace dxvk {
     /////////////////////////////////
     // Shader initialization methods
     void emitVsInit();
+
+    void emitPsSharedConstants();
     void emitPsInit();
 
     void emitFunctionBegin(
@@ -424,6 +459,12 @@ namespace dxvk {
     DxsoRegisterValue emitValueLoad(
             DxsoRegisterPointer ptr);
 
+    uint32_t getFloatConstantCount() {
+      return m_programInfo.type() == DxsoProgramTypes::VertexShader
+             ? caps::MaxFloatConstantsVS
+             : caps::MaxFloatConstantsPS;
+    }
+
     void emitDstStore(
             DxsoRegisterPointer     ptr,
             DxsoRegisterValue       value,
@@ -465,6 +506,18 @@ namespace dxvk {
             DxsoRegisterValue       value,
             DxsoRegMask             writeMask);
 
+    DxsoRegisterValue emitClampBoundReplicant(
+            DxsoRegisterValue       srcValue,
+            float                   lb,
+            float                   ub);
+
+    DxsoRegisterValue emitSaturate(
+            DxsoRegisterValue       srcValue);
+
+    DxsoRegisterValue emitDot(
+            DxsoRegisterValue       a,
+            DxsoRegisterValue       b);
+
     DxsoRegisterValue emitRegisterInsert(
             DxsoRegisterValue       dstValue,
             DxsoRegisterValue       srcValue,
@@ -478,7 +531,11 @@ namespace dxvk {
             DxsoRegisterValue       value,
             uint32_t size);
 
-    DxsoRegisterValue emitSrcOperandModifiers(
+    DxsoRegisterValue emitSrcOperandPreSwizzleModifiers(
+            DxsoRegisterValue       value,
+            DxsoRegModifier         modifier);
+
+    DxsoRegisterValue emitSrcOperandPostSwizzleModifiers(
             DxsoRegisterValue       value,
             DxsoRegModifier         modifier);
 
@@ -498,6 +555,16 @@ namespace dxvk {
       return this->emitRegisterLoad(
         reg, writeMask,
         reg.hasRelative ? &reg.relative : nullptr);
+    }
+
+    DxsoRegisterValue emitRegisterLoadTexcoord(
+      const DxsoRegister& reg,
+            DxsoRegMask   writeMask) {
+      DxsoRegister lookup = reg;
+      if (reg.id.type == DxsoRegisterType::Texture)
+        lookup.id.type = DxsoRegisterType::PixelTexcoord;
+
+      return this->emitRegisterLoad(lookup, writeMask);
     }
 
     ///////////////////////////////

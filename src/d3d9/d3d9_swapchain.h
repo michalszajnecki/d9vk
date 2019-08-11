@@ -24,7 +24,7 @@ namespace dxvk {
 
   using D3D9SwapChainExBase = D3D9DeviceChild<IDirect3DSwapChain9Ex>;
   class D3D9SwapChainEx final : public D3D9SwapChainExBase {
-
+    static constexpr uint32_t NumControlPoints = 256;
   public:
 
     D3D9SwapChainEx(
@@ -74,6 +74,8 @@ namespace dxvk {
 
     void    GetGammaRamp(D3DGAMMARAMP* pRamp);
 
+    void    Invalidate(HWND hWindow);
+
   private:
 
     enum BindingIds : uint32_t {
@@ -89,6 +91,7 @@ namespace dxvk {
     };
 
     D3DPRESENT_PARAMETERS   m_presentParams;
+    D3DGAMMARAMP            m_ramp;
 
     Rc<DxvkDevice>          m_device;
     Rc<DxvkContext>         m_context;
@@ -121,16 +124,25 @@ namespace dxvk {
     D3D9Surface*            m_backBuffer = nullptr;
     VkExtent2D              m_presentExtent;
 
+    DxvkSubmitStatus        m_presentStatus;
+
     std::vector<Rc<DxvkImageView>> m_imageViews;
 
     bool                    m_dirty    = true;
     bool                    m_vsync    = true;
+
+    bool                    m_asyncPresent = false;
+
     HWND                    m_window   = nullptr;
     HMONITOR                m_monitor  = nullptr;
+
+    MONITORINFOEXW          m_monInfo;
 
     WindowState             m_windowState;
 
     void PresentImage(UINT PresentInterval);
+
+    void SynchronizePresent();
 
     void FlushDevice();
 
@@ -151,11 +163,15 @@ namespace dxvk {
 
     void CreateHud();
 
+    void InitOptions();
+
     void InitRenderState();
 
     void InitSamplers();
 
     void InitShaders();
+
+    void InitRamp();
 
     uint32_t PickFormats(
             D3D9Format                Format,
@@ -181,6 +197,8 @@ namespace dxvk {
       const D3DDISPLAYMODEEX*       pFullscreenDisplayMode);
     
     HRESULT RestoreDisplayMode(HMONITOR hMonitor);
+
+    void    UpdateMonitorInfo();
 
     bool    UpdatePresentExtent(const RECT* pSourceRect);
 

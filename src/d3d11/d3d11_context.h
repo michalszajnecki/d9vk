@@ -679,8 +679,8 @@ namespace dxvk {
     
     void ApplyViewportState();
 
+    template<DxbcProgramType ShaderStage>
     void BindShader(
-            DxbcProgramType                   ShaderStage,
       const D3D11CommonShader*                pShaderModule);
     
     void BindFramebuffer(
@@ -708,7 +708,13 @@ namespace dxvk {
     
     void BindConstantBuffer(
             UINT                              Slot,
-      const D3D11ConstantBufferBinding*       pBufferBinding);
+            D3D11Buffer*                      pBuffer);
+    
+    void BindConstantBuffer1(
+            UINT                              Slot,
+            D3D11Buffer*                      pBuffer,
+            UINT                              Offset,
+            UINT                              Length);
     
     void BindSampler(
             UINT                              Slot,
@@ -734,15 +740,15 @@ namespace dxvk {
             ID3D11Buffer*                     pBufferForArgs,
             ID3D11Buffer*                     pBufferForCount);
     
+    template<DxbcProgramType ShaderStage>
     void SetConstantBuffers(
-            DxbcProgramType                   ShaderStage,
             D3D11ConstantBufferBindings&      Bindings,
             UINT                              StartSlot,
             UINT                              NumBuffers,
             ID3D11Buffer* const*              ppConstantBuffers);
     
+    template<DxbcProgramType ShaderStage>
     void SetConstantBuffers1(
-            DxbcProgramType                   ShaderStage,
             D3D11ConstantBufferBindings&      Bindings,
             UINT                              StartSlot,
             UINT                              NumBuffers,
@@ -750,32 +756,27 @@ namespace dxvk {
       const UINT*                             pFirstConstant,
       const UINT*                             pNumConstants);
     
+    template<DxbcProgramType ShaderStage>
     void SetSamplers(
-            DxbcProgramType                   ShaderStage,
             D3D11SamplerBindings&             Bindings,
             UINT                              StartSlot,
             UINT                              NumSamplers,
             ID3D11SamplerState* const*        ppSamplers);
     
+    template<DxbcProgramType ShaderStage>
     void SetShaderResources(
-            DxbcProgramType                   ShaderStage,
             D3D11ShaderResourceBindings&      Bindings,
             UINT                              StartSlot,
             UINT                              NumResources,
             ID3D11ShaderResourceView* const*  ppResources);
     
+    template<DxbcProgramType ShaderStage>
     void SetUnorderedAccessViews(
-            DxbcProgramType                   ShaderStage,
             D3D11UnorderedAccessBindings&     Bindings,
             UINT                              StartSlot,
             UINT                              NumUAVs,
             ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
       const UINT*                             pUAVInitialCounts);
-    
-    void SetRenderTargets(
-            UINT                              NumViews,
-            ID3D11RenderTargetView* const*    ppRenderTargetViews,
-            ID3D11DepthStencilView*           pDepthStencilView);
     
     void GetConstantBuffers(
       const D3D11ConstantBufferBindings&      Bindings,
@@ -787,20 +788,20 @@ namespace dxvk {
     
     void RestoreState();
     
+    template<DxbcProgramType Stage>
     void RestoreConstantBuffers(
-            DxbcProgramType                   Stage,
             D3D11ConstantBufferBindings&      Bindings);
     
+    template<DxbcProgramType Stage>
     void RestoreSamplers(
-            DxbcProgramType                   Stage,
             D3D11SamplerBindings&             Bindings);
     
+    template<DxbcProgramType Stage>
     void RestoreShaderResources(
-            DxbcProgramType                   Stage,
             D3D11ShaderResourceBindings&      Bindings);
     
+    template<DxbcProgramType Stage>
     void RestoreUnorderedAccessViews(
-            DxbcProgramType                   Stage,
             D3D11UnorderedAccessBindings&     Bindings);
     
     void UpdateMappedBuffer(
@@ -811,6 +812,10 @@ namespace dxvk {
             UINT                              NumViews,
             ID3D11RenderTargetView* const*    ppRenderTargetViews,
             ID3D11DepthStencilView*           pDepthStencilView);
+    
+    VkClearValue ConvertColorValue(
+      const FLOAT                             Color[4],
+      const DxvkFormatInfo*                   pFormatInfo);
     
     DxvkDataSlice AllocUpdateBufferSlice(size_t Size);
     
@@ -829,7 +834,7 @@ namespace dxvk {
     void EmitCs(Cmd&& command) {
       m_cmdData = nullptr;
 
-      if (!m_csChunk->push(command)) {
+      if (unlikely(!m_csChunk->push(command))) {
         EmitCsChunk(std::move(m_csChunk));
         
         m_csChunk = AllocCsChunk();
@@ -842,7 +847,7 @@ namespace dxvk {
       M* data = m_csChunk->pushCmd<M, Cmd, Args...>(
         command, std::forward<Args>(args)...);
 
-      if (!data) {
+      if (unlikely(!data)) {
         EmitCsChunk(std::move(m_csChunk));
         
         m_csChunk = AllocCsChunk();
@@ -855,7 +860,7 @@ namespace dxvk {
     }
     
     void FlushCsChunk() {
-      if (m_csChunk->commandCount() != 0) {
+      if (likely(!m_csChunk->empty())) {
         EmitCsChunk(std::move(m_csChunk));
         m_csChunk = AllocCsChunk();
         m_cmdData = nullptr;

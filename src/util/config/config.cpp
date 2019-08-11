@@ -47,17 +47,17 @@ namespace dxvk {
     }} },
     /* Far Cry 3: Assumes clear(0.5) on an UNORM  *
      * format to result in 128 on AMD and 127 on  *
-     * Nvidia. Most Vulkan drivers clear to 127,  *
-     * assuming higher values causes artifacts.   */
+     * Nvidia. We assume that the Vulkan drivers  *
+     * match the clear behaviour of D3D11.        */
     { "farcry3_d3d11.exe", {{
-      { "dxgi.customVendorId",              "10de" },
+      { "dxgi.nvapiHack",                   "False" },
     }} },
     { "fc3_blooddragon_d3d11.exe", {{
-      { "dxgi.customVendorId",              "10de" },
+      { "dxgi.nvapiHack",                   "False" },
     }} },
     /* Far Cry 4: Same as Far Cry 3               */
     { "FarCry4.exe", {{
-      { "dxgi.customVendorId",              "10de" },
+      { "dxgi.nvapiHack",                   "False" },
     }} },
     /* Far Cry 5: Avoid CPU <-> GPU sync          */
     { "FarCry5.exe", {{
@@ -164,6 +164,61 @@ namespace dxvk {
       { "d3d9.strictPow",                   "False" },
       { "d3d9.lenientClear",                "True" },
     }} },
+    /* Borderlands: The Pre Sequel!               */
+    { "BorderlandsPreSequel.exe", {{
+      { "d3d9.lenientClear",                "True" },
+    }} },
+    /* Borderlands 2                              */
+    { "Borderlands2.exe", {{
+      { "d3d9.lenientClear",                "True" },
+    }} },
+    /* Borderlands                                */
+    { "Borderlands.exe", {{
+      { "d3d9.lenientClear",                "True" },
+    }} },
+    /* Gothic 3                                   */
+    { "Gothic3.exe", {{
+      { "d3d9.allowLockFlagReadonly",       "False" },
+    }} },
+    /* Gothic 3 Forsaken Gods                     */
+    { "Gothic III Forsaken Gods.exe", {{
+      { "d3d9.allowLockFlagReadonly",       "False" },
+    }} },
+    /* Risen                                      */
+    { "Risen.exe", {{
+      { "d3d9.allowLockFlagReadonly",       "False" },
+    }} },
+    /* Risen 2                                    */
+    { "Risen2.exe", {{
+      { "d3d9.allowLockFlagReadonly",       "False" },
+    }} },
+    /* Risen 3                                    */
+    { "Risen3.exe", {{
+      { "d3d9.allowLockFlagReadonly",       "False" },
+    }} },
+    /* Star Wars: The Force Unleashed 1 & 2       */
+    { "SWTFU.exe", {{
+      { "d3d9.hasHazards",                  "True" },
+    }} },
+    { "SWTFU2.exe", {{
+      { "d3d9.hasHazards",                  "True" },
+    }} },
+    /* Grand Theft Auto IV                        */
+    { "GTAIV.exe", {{
+      { "d3d9.hasHazards",                  "True" },
+    }} },
+    /* Deadlight                                  */
+    { "LOTDGame.exe", {{
+      { "d3d9.hasHazards",                  "True" },
+    }} },
+    /* Nostale                                    */
+    { "NostaleClientX.exe", {{
+      { "d3d9.allowLockFlagReadonly",       "False" },
+    }} },
+    /* GTA Episodes from Liberty City             */
+    { "EFLC.exe", {{
+      { "d3d9.hasHazards",                  "True" },
+    }} }
   }};
 
 
@@ -308,6 +363,29 @@ namespace dxvk {
 
     // Apply sign and return
     result = sign * intval;
+    return true;
+  }
+
+
+  bool Config::parseOptionValue(
+    const std::string&  value,
+          uint32_t&     result) {
+    if (value.size() == 0)
+      return false;
+
+    // Parse absolute number
+    uint32_t uintval = 0;
+
+    for (size_t i = 0; i < value.size(); i++) {
+      if (value[i] < '0' || value[i] > '9')
+        return false;
+      
+      uintval *= 10;
+      uintval += value[i] - '0';
+    }
+
+    // Return result
+    result = uintval;
     return true;
   }
   

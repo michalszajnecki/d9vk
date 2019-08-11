@@ -228,6 +228,16 @@ namespace dxvk {
             uint32_t                structId,
             uint32_t                memberId,
             spv::BuiltIn            builtIn);
+
+    void memberDecorate(
+            uint32_t                structId,
+            uint32_t                memberId,
+            spv::Decoration         decoration);
+
+    void memberDecorateMatrixStride(
+            uint32_t                structId,
+            uint32_t                memberId,
+            uint32_t                stride);
     
     void memberDecorateOffset(
             uint32_t                structId,
@@ -608,6 +618,11 @@ namespace dxvk {
             uint32_t                x,
             uint32_t                y,
             uint32_t                a);
+
+  uint32_t opCross(
+            uint32_t                resultType,
+            uint32_t                x,
+            uint32_t                y);
     
     uint32_t opIAdd(
             uint32_t                resultType,
@@ -668,6 +683,29 @@ namespace dxvk {
             uint32_t                resultType,
             uint32_t                vector,
             uint32_t                scalar);
+
+    uint32_t opMatrixTimesMatrix(
+            uint32_t                resultType,
+            uint32_t                a,
+            uint32_t                b);
+
+    uint32_t opMatrixTimesVector(
+            uint32_t                resultType,
+            uint32_t                matrix,
+            uint32_t                vector);
+
+    uint32_t opVectorTimesMatrix(
+            uint32_t                resultType,
+            uint32_t                vector,
+            uint32_t                matrix);
+
+    uint32_t opTranspose(
+            uint32_t                resultType,
+            uint32_t                matrix);
+
+    uint32_t opInverse(
+            uint32_t                resultType,
+            uint32_t                matrix);
     
     uint32_t opFFma(
             uint32_t                resultType,
@@ -849,6 +887,14 @@ namespace dxvk {
             uint32_t                operand);
     
     uint32_t opInverseSqrt(
+            uint32_t                resultType,
+            uint32_t                operand);
+
+    uint32_t opNormalize(
+            uint32_t                resultType,
+            uint32_t                operand);
+
+    uint32_t opLength(
             uint32_t                resultType,
             uint32_t                operand);
     
@@ -1123,6 +1169,8 @@ namespace dxvk {
     void opReturn();
     
     void opKill();
+
+    void opDemoteToHelperInvocation();
     
     void opEmitVertex(
             uint32_t                streamId);

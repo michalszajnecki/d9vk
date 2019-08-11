@@ -19,11 +19,11 @@ namespace dxvk {
    */
   struct D3D9_BUFFER_DESC {
     D3DRESOURCETYPE Type;
-    UINT Size;
-    DWORD Usage;
-    D3D9Format Format;
-    D3DPOOL Pool;
-    DWORD FVF;
+    UINT            Size;
+    DWORD           Usage;
+    D3D9Format      Format;
+    D3DPOOL         Pool;
+    DWORD           FVF;
   };
 
   /**
@@ -33,6 +33,34 @@ namespace dxvk {
     D3D9_COMMON_BUFFER_TYPE_MAPPING,
     D3D9_COMMON_BUFFER_TYPE_STAGING,
     D3D9_COMMON_BUFFER_TYPE_REAL
+  };
+
+  struct D3D9Range {
+    D3D9Range() { clear(); }
+
+    D3D9Range(uint32_t min, uint32_t max)
+      : min(min), max(max) { }
+
+    bool degenerate() { return min == max; }
+
+    bool overlap(D3D9Range range) {
+      if (degenerate()) {
+        *this = range;
+        return false;
+      }
+
+      bool overlaps = range.max > min && range.min < max;
+
+      min = std::min(range.min, min);
+      max = std::max(range.max, max);
+
+      return overlaps;
+    }
+
+    void clear() { min = 0; max = 0; }
+
+    uint32_t min = 0;
+    uint32_t max = 0;
   };
 
   class D3D9CommonBuffer {
@@ -108,6 +136,13 @@ namespace dxvk {
       return &m_desc;
     }
 
+    static HRESULT ValidateBufferProperties(const D3D9_BUFFER_DESC* pDesc);
+
+    D3D9Range& LockRange()  { return m_lockRange; }
+    D3D9Range& DirtyRange() { return m_dirtyRange; }
+
+    bool SetReadLocked(bool state) { return std::exchange(m_readLocked, state); }
+
   private:
 
     Rc<DxvkBuffer> CreateBuffer() const;
@@ -128,11 +163,15 @@ namespace dxvk {
     D3D9DeviceEx*               m_parent;
     const D3D9_BUFFER_DESC      m_desc;
     DWORD                       m_mapFlags;
+    bool                        m_readLocked = false;
 
     Rc<DxvkBuffer>              m_buffer;
     Rc<DxvkBuffer>              m_stagingBuffer;
 
     DxvkBufferSliceHandle       m_sliceHandle;
+
+    D3D9Range                   m_lockRange;
+    D3D9Range                   m_dirtyRange;
 
   };
 
