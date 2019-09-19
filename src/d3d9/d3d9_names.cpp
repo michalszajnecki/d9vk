@@ -85,6 +85,32 @@ namespace dxvk {
       ENUM_NAME(D3D9Format::A2M0);
       ENUM_NAME(D3D9Format::ATOC);
       ENUM_NAME(D3D9Format::INTZ);
+      ENUM_NAME(D3D9Format::RAWZ);
+      ENUM_NAME(D3D9Format::RESZ);
+
+      ENUM_NAME(D3D9Format::NV11);
+      ENUM_NAME(D3D9Format::NV12);
+      ENUM_NAME(D3D9Format::P010);
+      ENUM_NAME(D3D9Format::P016);
+      ENUM_NAME(D3D9Format::Y210);
+      ENUM_NAME(D3D9Format::Y216);
+      ENUM_NAME(D3D9Format::Y410);
+      ENUM_NAME(D3D9Format::AYUV);
+      ENUM_NAME(D3D9Format::YV12);
+      ENUM_NAME(D3D9Format::OPAQUE_420);
+
+      ENUM_NAME(D3D9Format::AI44);
+      ENUM_NAME(D3D9Format::IA44);
+      ENUM_NAME(D3D9Format::R2VB);
+      ENUM_NAME(D3D9Format::COPM);
+      ENUM_NAME(D3D9Format::SSAA);
+      ENUM_NAME(D3D9Format::AL16);
+      ENUM_NAME(D3D9Format::R16);
+
+      ENUM_NAME(D3D9Format::EXT1);
+      ENUM_NAME(D3D9Format::FXT1);
+      ENUM_NAME(D3D9Format::GXT1);
+      ENUM_NAME(D3D9Format::HXT1);
 
       ENUM_DEFAULT(e);
     }

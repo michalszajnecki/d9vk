@@ -894,11 +894,20 @@ namespace dxvk {
             uint32_t                resultType,
             uint32_t                operand);
 
+    uint32_t opReflect(
+            uint32_t                resultType,
+            uint32_t                incident,
+            uint32_t                normal);
+
     uint32_t opLength(
             uint32_t                resultType,
             uint32_t                operand);
     
     uint32_t opExp2(
+            uint32_t                resultType,
+            uint32_t                operand);
+
+    uint32_t opExp(
             uint32_t                resultType,
             uint32_t                operand);
     

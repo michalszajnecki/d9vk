@@ -49,6 +49,13 @@ namespace dxvk {
     DirtyInputLayout,
     DirtyViewportScissor,
     DirtyMultiSampleState,
+
+    DirtyFogState,
+    DirtyFogColor,
+    DirtyFogDensity,
+    DirtyFogScale,
+    DirtyFogEnd,
+
     DirtyFFVertexData,
     DirtyFFVertexShader,
     DirtyFFPixelShader,
@@ -58,7 +65,8 @@ namespace dxvk {
     DirtySharedPixelShaderData,
     UpDirtiedVertices,
     UpDirtiedIndices,
-    ValidSampleMask
+    ValidSampleMask,
+    DirtyDepthBounds
   };
 
   using D3D9DeviceFlags = Flags<D3D9DeviceFlag>;
@@ -629,13 +637,11 @@ namespace dxvk {
 
     static DxvkDeviceFeatures GetDeviceFeatures(const Rc<DxvkAdapter>& adapter);
 
+    bool SupportsSWVP();
+
     bool IsExtended();
 
     HWND GetWindow();
-
-    void FlushCursor() {
-      return m_cursor.FlushCursor();
-    }
 
     Rc<DxvkDevice> GetDXVKDevice() {
       return m_dxvkDevice;
@@ -713,6 +719,8 @@ namespace dxvk {
     void Flush();
 
     void CheckForHazards();
+
+    void UpdateFog();
 
     void BindFramebuffer();
 

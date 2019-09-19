@@ -286,6 +286,11 @@ namespace dxvk {
      * SetLOD only works on MANAGED textures so this is A-okay.
      */
     void RecreateSampledView(UINT Lod) {
+      // This will be a no-op for SYSTEMMEM types given we
+      // don't expose the cap to allow texturing with them.
+      if (unlikely(m_mapMode == D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM))
+        return;
+
       const D3D9_VK_FORMAT_MAPPING formatInfo = m_device->LookupFormat(m_desc.Format);
 
       m_views.Sample = CreateColorViewPair(formatInfo, AllLayers, VK_IMAGE_USAGE_SAMPLED_BIT, Lod);
@@ -314,17 +319,6 @@ namespace dxvk {
 
     D3DRESOURCETYPE GetType() {
       return m_type;
-    }
-
-    void MarkSystemMemGPUModified() {
-      m_systemmemModified = true;
-    }
-    void UnmarkSystemMemGPUModified() {
-      m_systemmemModified = false;
-    }
-
-    bool GetSystemMemGPUModified() {
-      return m_systemmemModified;
     }
 
     bool MarkLocked(UINT Subresource, bool value) { return std::exchange(m_locked[Subresource], value); }

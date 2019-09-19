@@ -10,6 +10,175 @@
 
 namespace dxvk {
 
+  uint32_t DoFixedFunctionFog(SpirvModule& spvModule, const D3D9FogContext& fogCtx) {
+    uint32_t boolType   = spvModule.defBoolType();
+    uint32_t floatType  = spvModule.defFloatType(32);
+    uint32_t uint32Type = spvModule.defIntType(32, 0);
+    uint32_t vec3Type   = spvModule.defVectorType(floatType, 3);
+    uint32_t vec4Type   = spvModule.defVectorType(floatType, 4);
+    uint32_t floatPtr   = spvModule.defPointerType(floatType, spv::StorageClassPushConstant);
+    uint32_t vec3Ptr    = spvModule.defPointerType(vec3Type,  spv::StorageClassPushConstant);
+
+    uint32_t fogColorMember = spvModule.constu32(uint32_t(D3D9RenderStateItem::FogColor));
+    uint32_t fogColor = spvModule.opLoad(vec3Type,
+      spvModule.opAccessChain(vec3Ptr, fogCtx.RenderState, 1, &fogColorMember));
+
+    uint32_t fogScaleMember = spvModule.constu32(uint32_t(D3D9RenderStateItem::FogScale));
+    uint32_t fogScale = spvModule.opLoad(floatType,
+      spvModule.opAccessChain(floatPtr, fogCtx.RenderState, 1, &fogScaleMember));
+
+    uint32_t fogEndMember = spvModule.constu32(uint32_t(D3D9RenderStateItem::FogEnd));
+    uint32_t fogEnd = spvModule.opLoad(floatType,
+      spvModule.opAccessChain(floatPtr, fogCtx.RenderState, 1, &fogEndMember));
+
+    uint32_t fogDensityMember = spvModule.constu32(uint32_t(D3D9RenderStateItem::FogDensity));
+    uint32_t fogDensity = spvModule.opLoad(floatType,
+      spvModule.opAccessChain(floatPtr, fogCtx.RenderState, 1, &fogDensityMember));
+
+    uint32_t fogMode = spvModule.specConst32(uint32Type, 0);
+
+    if (!fogCtx.IsPixel) {
+      spvModule.setDebugName(fogMode, "vertex_fog_mode");
+      spvModule.decorateSpecId(fogMode, getSpecId(D3D9SpecConstantId::VertexFogMode));
+    }
+    else {
+      spvModule.setDebugName(fogMode, "pixel_fog_mode");
+      spvModule.decorateSpecId(fogMode, getSpecId(D3D9SpecConstantId::PixelFogMode));
+    }
+
+    uint32_t fogEnabled = spvModule.specConstBool(false);
+    spvModule.setDebugName(fogEnabled, "fog_enabled");
+    spvModule.decorateSpecId(fogEnabled, getSpecId(D3D9SpecConstantId::FogEnabled));
+
+    uint32_t doFog   = spvModule.allocateId();
+    uint32_t skipFog = spvModule.allocateId();
+
+    uint32_t returnType     = fogCtx.IsPixel ? vec4Type : floatType;
+    uint32_t returnTypePtr  = spvModule.defPointerType(returnType, spv::StorageClassPrivate);
+    uint32_t returnValuePtr = spvModule.newVar(returnTypePtr, spv::StorageClassPrivate);
+    spvModule.opStore(returnValuePtr, fogCtx.IsPixel ? fogCtx.oColor : spvModule.constf32(0.0f));
+
+    // Actually do the fog now we have all the vars in-place.
+
+    spvModule.opSelectionMerge(skipFog, spv::SelectionControlMaskNone);
+    spvModule.opBranchConditional(fogEnabled, doFog, skipFog);
+
+    spvModule.opLabel(doFog);
+
+    uint32_t wIndex = 3;
+    uint32_t zIndex = 2;
+
+    uint32_t w = spvModule.opCompositeExtract(floatType, fogCtx.vPos, 1, &wIndex);
+    uint32_t z = spvModule.opCompositeExtract(floatType, fogCtx.vPos, 1, &zIndex);
+
+    uint32_t depth = 0;
+    if (fogCtx.IsPixel)
+      depth = spvModule.opFMul(floatType, z, spvModule.opFDiv(floatType, spvModule.constf32(1.0f), w));
+    else {
+      if (fogCtx.RangeFog) {
+        std::array<uint32_t, 3> indices = { 0, 1, 2 };
+        uint32_t pos3 = spvModule.opVectorShuffle(vec3Type, fogCtx.vPos, fogCtx.vPos, indices.size(), indices.data());
+        depth = spvModule.opLength(floatType, pos3);
+      }
+      else
+        depth = spvModule.opFAbs(floatType, z);
+    }
+
+    uint32_t applyFogFactor = spvModule.allocateId();
+
+    std::array<SpirvPhiLabel, 4> fogVariables;
+
+    std::array<SpirvSwitchCaseLabel, 4> fogCaseLabels = { {
+      { uint32_t(D3DFOG_NONE),      spvModule.allocateId() },
+      { uint32_t(D3DFOG_EXP),       spvModule.allocateId() },
+      { uint32_t(D3DFOG_EXP2),      spvModule.allocateId() },
+      { uint32_t(D3DFOG_LINEAR),    spvModule.allocateId() },
+    } };
+
+
+    spvModule.opSelectionMerge(applyFogFactor, spv::SelectionControlMaskNone);
+    spvModule.opSwitch(fogMode,
+      fogCaseLabels[D3DFOG_NONE].labelId,
+      fogCaseLabels.size(),
+      fogCaseLabels.data());
+
+    for (uint32_t i = 0; i < fogCaseLabels.size(); i++) {
+      spvModule.opLabel(fogCaseLabels[i].labelId);
+        
+      fogVariables[i].labelId = fogCaseLabels[i].labelId;
+      fogVariables[i].varId   = [&] {
+        auto mode = D3DFOGMODE(fogCaseLabels[i].literal);
+        switch (mode) {
+          default:
+          // vFog
+          case D3DFOG_NONE: {
+            return fogCtx.vFog;
+          }
+
+          // (end - d) / (end - start)
+          case D3DFOG_LINEAR: {
+            uint32_t fogFactor = spvModule.opFSub(floatType, fogEnd, depth);
+            fogFactor = spvModule.opFMul(floatType, fogFactor, fogScale);
+            fogFactor = spvModule.opFClamp(floatType, fogFactor, spvModule.constf32(0.0f), spvModule.constf32(1.0f));
+            return fogFactor;
+          }
+
+          // 1 / (e^[d * density])^2
+          case D3DFOG_EXP2:
+          // 1 / (e^[d * density])
+          case D3DFOG_EXP: {
+            uint32_t fogFactor = spvModule.opFMul(floatType, depth, fogDensity);
+
+            if (mode == D3DFOG_EXP2)
+              fogFactor = spvModule.opFMul(floatType, fogFactor, fogFactor);
+
+            // Provides the rcp.
+            fogFactor = spvModule.opFNegate(floatType, fogFactor);
+            fogFactor = spvModule.opExp(floatType, fogFactor);
+            return fogFactor;
+          }
+        }
+      }();
+        
+      spvModule.opBranch(applyFogFactor);
+    }
+
+    spvModule.opLabel(applyFogFactor);
+
+    uint32_t fogFactor = spvModule.opPhi(floatType,
+      fogVariables.size(),
+      fogVariables.data());
+
+    uint32_t fogRetValue = 0;
+
+    // Return the new color if we are doing this in PS
+    // or just the fog factor for oFog in VS
+    if (fogCtx.IsPixel) {
+      std::array<uint32_t, 4> indices = { 0, 1, 2, 6 };
+
+      uint32_t color = fogCtx.oColor;
+
+      uint32_t color3 = spvModule.opVectorShuffle(vec3Type, color, color, 3, indices.data());
+
+      std::array<uint32_t, 3> fogFacIndices = { fogFactor, fogFactor, fogFactor };
+      uint32_t fogFact3 = spvModule.opCompositeConstruct(vec3Type, fogFacIndices.size(), fogFacIndices.data());
+
+      uint32_t lerpedFrog = spvModule.opFMix(vec3Type, fogColor, color3, fogFact3);
+
+      fogRetValue = spvModule.opVectorShuffle(vec4Type, lerpedFrog, color, indices.size(), indices.data());
+    }
+    else
+      fogRetValue = fogFactor;
+
+    spvModule.opStore(returnValuePtr, fogRetValue);
+
+    spvModule.opBranch(skipFog);
+
+    spvModule.opLabel(skipFog);
+
+    return spvModule.opLoad(returnType, returnValuePtr);
+  }
+
     enum FFConstantMembersVS {
       VSConstWorldViewMatrix   = 0,
       VSConstNormalMatrix    = 1,
@@ -75,6 +244,7 @@ namespace dxvk {
       uint32_t NORMAL = { 0 };
       uint32_t TEXCOORD[8] = { 0 };
       uint32_t COLOR[2] = { 0 };
+      uint32_t FOG = { 0 };
     } in;
 
     struct {
@@ -82,6 +252,7 @@ namespace dxvk {
       uint32_t NORMAL = { 0 };
       uint32_t TEXCOORD[8] = { 0 };
       uint32_t COLOR[2] = { 0 };
+      uint32_t FOG = { 0 };
     } out;
   };
 
@@ -101,6 +272,8 @@ namespace dxvk {
     struct {
       uint32_t TEXCOORD[8] = { 0 };
       uint32_t COLOR[2]    = { 0 };
+      uint32_t FOG         = { 0 };
+      uint32_t POS         = { 0 };
     } in;
 
     struct {
@@ -140,6 +313,8 @@ namespace dxvk {
 
     void compileVS();
 
+    void setupRenderStateInfo();
+
     void setupVS();
 
     void compilePS();
@@ -173,9 +348,13 @@ namespace dxvk {
     uint32_t              m_uint32Type;
     uint32_t              m_vec4Type;
     uint32_t              m_vec3Type;
+    uint32_t              m_mat3Type;
     uint32_t              m_mat4Type;
 
     uint32_t              m_entryPointId;
+
+    uint32_t              m_rsBlock;
+    uint32_t              m_mainFuncLabel;
   };
 
   D3D9FFShaderCompiler::D3D9FFShaderCompiler(
@@ -203,6 +382,7 @@ namespace dxvk {
     m_uint32Type = m_module.defIntType(32, 0);
     m_vec4Type   = m_module.defVectorType(m_floatType, 4);
     m_vec3Type   = m_module.defVectorType(m_floatType, 3);
+    m_mat3Type   = m_module.defMatrixType(m_vec3Type, 3);
     m_mat4Type   = m_module.defMatrixType(m_vec4Type, 4);
 
     m_entryPointId = m_module.allocateId();
@@ -227,7 +407,8 @@ namespace dxvk {
       spv::FunctionControlMaskNone);
     m_module.setDebugName(m_entryPointId, "main");
 
-    m_module.opLabel(m_module.allocateId());
+    m_mainFuncLabel = m_module.allocateId();
+    m_module.opLabel(m_mainFuncLabel);
 
     if (isVS())
       compileVS();
@@ -289,7 +470,9 @@ namespace dxvk {
     spv::StorageClass storageClass = input ?
       spv::StorageClassInput : spv::StorageClassOutput;
 
-    uint32_t ptrType = m_module.defPointerType(m_vec4Type, storageClass);
+    uint32_t type = semantic.usage == DxsoUsage::Fog ? m_floatType : m_vec4Type;
+
+    uint32_t ptrType = m_module.defPointerType(type, storageClass);
 
     uint32_t ptr = m_module.newVar(ptrType, storageClass);
 
@@ -304,7 +487,7 @@ namespace dxvk {
     m_entryPointInterfaces.push_back(ptr);
 
     if (input)
-      return m_module.opLoad(m_vec4Type, ptr);
+      return m_module.opLoad(type, ptr);
 
     return ptr;
   }
@@ -313,19 +496,40 @@ namespace dxvk {
   void D3D9FFShaderCompiler::compileVS() {
     setupVS();
 
+    std::array<uint32_t, 4> indices = { 0, 1, 2, 3 };
+
     uint32_t gl_Position = m_vs.in.POSITION;
     uint32_t vtx         = m_vs.in.POSITION;
-    uint32_t normal      = m_vs.in.NORMAL;
+    uint32_t normal      = m_module.opVectorShuffle(m_vec3Type, m_vs.in.NORMAL, m_vs.in.NORMAL, 3, indices.data());
+
+    const uint32_t wIndex = 3;
 
     if (!m_vsKey.HasPositionT) {
       uint32_t wv = m_vs.constants.worldview;
       uint32_t nrmMtx = m_vs.constants.normal;
 
-      normal = m_module.opMatrixTimesVector(m_vec4Type, nrmMtx, normal);
+      std::array<uint32_t, 3> mtxIndices;
+      for (uint32_t i = 0; i < 3; i++) {
+        mtxIndices[i] = m_module.opCompositeExtract(m_vec4Type, nrmMtx, 1, &i);
+        mtxIndices[i] = m_module.opVectorShuffle(m_vec3Type, mtxIndices[i], mtxIndices[i], 3, indices.data());
+      }
+      nrmMtx = m_module.opCompositeConstruct(m_mat3Type, mtxIndices.size(), mtxIndices.data());
+
+      normal = m_module.opMatrixTimesVector(m_vec3Type, nrmMtx, normal);
 
       // Some games rely no normals not being normal.
-      if (m_vsKey.NormalizeNormals)
-        normal = m_module.opNormalize(m_vec4Type, normal);
+      if (m_vsKey.NormalizeNormals) {
+        uint32_t bool_t = m_module.defBoolType();
+        uint32_t bool3_t = m_module.defVectorType(bool_t, 3);
+
+        uint32_t isZeroNormal = m_module.opAll(bool_t, m_module.opFOrdEqual(bool3_t, normal, m_module.constvec3f32(0.0f, 0.0f, 0.0f)));
+
+        std::array<uint32_t, 3> members = { isZeroNormal, isZeroNormal, isZeroNormal };
+        uint32_t isZeroNormal3 = m_module.opCompositeConstruct(bool3_t, members.size(), members.data());
+
+        normal = m_module.opNormalize(m_vec3Type, normal);
+        normal = m_module.opSelect(m_vec3Type, isZeroNormal3, m_module.constvec3f32(0.0f, 0.0f, 0.0f), normal);
+      }
 
       vtx         = m_module.opVectorTimesMatrix(m_vec4Type, vtx, wv);
       gl_Position = m_module.opVectorTimesMatrix(m_vec4Type, vtx, m_vs.constants.proj);
@@ -338,8 +542,6 @@ namespace dxvk {
       // gl_Position.w    = 1.0f / gl_Position.w
       // gl_Position.xyz *= gl_Position.w;
 
-      const uint32_t wIndex = 3;
-
       uint32_t w   = m_module.opCompositeExtract (m_floatType, gl_Position, 1, &wIndex);      // w = gl_Position.w
       uint32_t rhw = m_module.opFDiv             (m_floatType, m_module.constf32(1.0f), w);   // rhw = 1.0f / w
       gl_Position  = m_module.opVectorTimesScalar(m_vec4Type,  gl_Position, rhw);             // gl_Position.xyz *= rhw
@@ -347,31 +549,83 @@ namespace dxvk {
     }
 
     m_module.opStore(m_vs.out.POSITION, gl_Position);
-    m_module.opStore(m_vs.out.NORMAL,   normal);
+
+    std::array<uint32_t, 4> outNrmIndices;
+    for (uint32_t i = 0; i < 3; i++)
+      outNrmIndices[i] = m_module.opCompositeExtract(m_floatType, normal, 1, &i);
+    outNrmIndices[3] = m_module.constf32(1.0f);
+
+    uint32_t outNrm = m_module.opCompositeConstruct(m_vec4Type, outNrmIndices.size(), outNrmIndices.data());
+
+    m_module.opStore(m_vs.out.NORMAL, outNrm);
 
     for (uint32_t i = 0; i < caps::TextureStageCount; i++) {
       uint32_t inputIndex  = m_vsKey.TexcoordIndices[i];
 
       uint32_t transformed;
-      if (inputIndex & D3DTSS_TCI_CAMERASPACENORMAL) {
-        const uint32_t wIndex = 3;
-        transformed = m_module.opCompositeInsert(m_vec4Type, m_module.constf32(1.0f), normal, 1, &wIndex);
-      }
-      else if (inputIndex & D3DTSS_TCI_CAMERASPACEPOSITION) {
-        const uint32_t wIndex = 3;
-        transformed = m_module.opCompositeInsert(m_vec4Type, m_module.constf32(1.0f), vtx, 1, &wIndex);
-      } else {
-        if (inputIndex > 8)
-          Logger::warn(str::format("Unsupported texcoordindex flag (D3DTSS_TCI) ", inputIndex & ~0xFF, " for index ", inputIndex & 0xFF));
 
-        transformed = m_vs.in.TEXCOORD[inputIndex & 0xFF];
+      const uint32_t wIndex = 3;
+
+      uint32_t count = m_vsKey.TransformFlags[i];
+      switch (inputIndex & 0xffff0000) {
+        default:
+        case D3DTSS_TCI_PASSTHRU:
+          transformed = m_vs.in.TEXCOORD[inputIndex & 0xFF];
+          break;
+
+        case D3DTSS_TCI_CAMERASPACENORMAL:
+          transformed = outNrm;
+          count = 4;
+          break;
+
+        case D3DTSS_TCI_CAMERASPACEPOSITION:
+          transformed = m_module.opCompositeInsert(m_vec4Type, m_module.constf32(1.0f), vtx, 1, &wIndex);
+          count = 4;
+          break;
+
+        case D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR: {
+          uint32_t vtx3 = m_module.opVectorShuffle(m_vec3Type, vtx, vtx, 3, indices.data());
+          vtx3 = m_module.opNormalize(m_vec3Type, vtx3);
+          
+          uint32_t reflection = m_module.opReflect(m_vec3Type, vtx3, normal);
+
+          std::array<uint32_t, 4> transformIndices;
+          for (uint32_t i = 0; i < 3; i++)
+            transformIndices[i] = m_module.opCompositeExtract(m_floatType, reflection, 1, &i);
+          transformIndices[3] = m_module.constf32(1.0f);
+
+          transformed = m_module.opCompositeConstruct(m_vec4Type, transformIndices.size(), transformIndices.data());
+          count = 4;
+          break;
+        }
+
+        case D3DTSS_TCI_SPHEREMAP: {
+          uint32_t vtx3 = m_module.opVectorShuffle(m_vec3Type, vtx, vtx, 3, indices.data());
+          vtx3 = m_module.opNormalize(m_vec3Type, vtx3);
+
+          uint32_t reflection = m_module.opReflect(m_vec3Type, vtx3, normal);
+          uint32_t m = m_module.opFAdd(m_vec3Type, reflection, m_module.constvec3f32(0, 0, 1));
+          m = m_module.opLength(m_floatType, m);
+          m = m_module.opFMul(m_floatType, m, m_module.constf32(2.0f));
+
+          std::array<uint32_t, 4> transformIndices;
+          for (uint32_t i = 0; i < 2; i++) {
+            transformIndices[i] = m_module.opCompositeExtract(m_floatType, reflection, 1, &i);
+            transformIndices[i] = m_module.opFDiv(m_floatType, transformIndices[i], m);
+            transformIndices[i] = m_module.opFAdd(m_floatType, transformIndices[i], m_module.constf32(0.5f));
+          }
+
+          transformIndices[2] = m_module.constf32(0.0f);
+          transformIndices[3] = m_module.constf32(1.0f);
+
+          transformed = m_module.opCompositeConstruct(m_vec4Type, transformIndices.size(), transformIndices.data());
+          count = 4;
+          break;
+        }
       }
 
       uint32_t type = m_vsKey.TransformFlags[i];
       if (type != D3DTTFF_DISABLE) {
-        // Project is already removed in the key.
-        uint32_t count = type;
-
         if (!m_vsKey.HasPositionT) {
           uint32_t one  = m_module.constf32(1.0f);
 
@@ -446,7 +700,6 @@ namespace dxvk {
 
         uint32_t isDirectional3 = m_module.opCompositeConstruct(bool3_t, members.size(), members.data());
 
-        std::array<uint32_t, 4> indices = { 0, 1, 2, 3 };
         uint32_t vtx3      = m_module.opVectorShuffle(m_vec3Type, vtx, vtx, 3, indices.data());
                  position  = m_module.opVectorShuffle(m_vec3Type, position, position, 3, indices.data());
                  direction = m_module.opVectorShuffle(m_vec3Type, direction, direction, 3, indices.data());
@@ -471,8 +724,8 @@ namespace dxvk {
                    spotAtten  = m_module.opFDiv(m_floatType, spotAtten, m_module.opFSub(m_floatType, theta, phi));
                    spotAtten  = m_module.opPow (m_floatType, spotAtten, falloff);
 
-          uint32_t insideThetaAndPhi = m_module.opFOrdGreaterThanEqual(bool_t, rho, theta);
-          uint32_t insidePhi         = m_module.opFOrdGreaterThanEqual(bool_t, rho, phi);
+          uint32_t insideThetaAndPhi = m_module.opFOrdLessThanEqual(bool_t, rho, theta);
+          uint32_t insidePhi         = m_module.opFOrdGreaterThan(bool_t, rho, phi);
                    spotAtten  = m_module.opSelect(m_floatType, insidePhi,         spotAtten, m_module.constf32(0.0f));
                    spotAtten  = m_module.opSelect(m_floatType, insideThetaAndPhi, spotAtten, m_module.constf32(1.0f));
                    spotAtten  = m_module.opFClamp(m_floatType, spotAtten, m_module.constf32(0.0f), m_module.constf32(1.0f));
@@ -482,18 +735,23 @@ namespace dxvk {
         }
 
 
-        uint32_t nrm3   = m_module.opVectorShuffle(m_vec3Type, normal, normal, 3, indices.data());
-        uint32_t hitDot = m_module.opDot(m_floatType, nrm3, hitDir);
+        uint32_t hitDot = m_module.opDot(m_floatType, normal, hitDir);
                  hitDot = m_module.opFClamp(m_floatType, hitDot, m_module.constf32(0.0f), m_module.constf32(1.0f));
 
         uint32_t diffuseness = m_module.opFMul(m_floatType, hitDot, atten);
 
-        uint32_t mid = m_module.opNormalize(m_vec3Type, vtx3);
-                 mid = m_module.opFAdd(m_vec3Type, hitDir, m_module.opFNegate(m_vec3Type, mid));
-                 mid = m_module.opNormalize(m_vec3Type, mid);
+        uint32_t mid;
+        if (m_vsKey.LocalViewer) {
+          mid = m_module.opNormalize(m_vec3Type, vtx3);
+          mid = m_module.opFSub(m_vec3Type, hitDir, mid);
+        }
+        else
+          mid = m_module.opFSub(m_vec3Type, hitDir, m_module.constvec3f32(0.0f, 0.0f, 1.0f));
 
-        uint32_t midDot = m_module.opDot(m_floatType, nrm3, mid);
-                 midDot = m_module.opFClamp(m_floatType, hitDot, m_module.constf32(0.0f), m_module.constf32(1.0f));
+        mid = m_module.opNormalize(m_vec3Type, mid);
+
+        uint32_t midDot = m_module.opDot(m_floatType, normal, mid);
+                 midDot = m_module.opFClamp(m_floatType, midDot, m_module.constf32(0.0f), m_module.constf32(1.0f));
         uint32_t doSpec = m_module.opFOrdGreaterThan(bool_t, midDot, m_module.constf32(0.0f));
         uint32_t specularness = m_module.opPow(m_floatType, midDot, m_vs.constants.materialPower);
                  specularness = m_module.opFMul(m_floatType, specularness, atten);
@@ -537,10 +795,57 @@ namespace dxvk {
       m_module.opStore(m_vs.out.COLOR[0], m_vs.in.COLOR[0]);
       m_module.opStore(m_vs.out.COLOR[1], m_vs.in.COLOR[1]);
     }
+
+    D3D9FogContext fogCtx;
+    fogCtx.IsPixel     = false;
+    fogCtx.RangeFog    = m_vsKey.RangeFog;
+    fogCtx.RenderState = m_rsBlock;
+    fogCtx.vPos        = vtx;
+    fogCtx.vFog        = m_vs.in.FOG;
+    fogCtx.oColor      = 0;
+    m_module.opStore(m_vs.out.FOG, DoFixedFunctionFog(m_module, fogCtx));
+  }
+
+
+  void D3D9FFShaderCompiler::setupRenderStateInfo() {
+    // TODO: fix duplication of this
+
+    std::array<uint32_t, 5> rsMembers = {{
+      m_vec3Type,
+      m_floatType,
+      m_floatType,
+      m_floatType,
+      m_floatType
+    }};
+    
+    uint32_t rsStruct = m_module.defStructTypeUnique(rsMembers.size(), rsMembers.data());
+    m_rsBlock = m_module.newVar(
+      m_module.defPointerType(rsStruct, spv::StorageClassPushConstant),
+      spv::StorageClassPushConstant);
+    
+    m_module.setDebugName         (rsStruct, "render_state_t");
+    m_module.decorate             (rsStruct, spv::DecorationBlock);
+    m_module.setDebugMemberName   (rsStruct, 0, "fog_color");
+    m_module.memberDecorateOffset (rsStruct, 0, offsetof(D3D9RenderStateInfo, fogColor));
+    m_module.setDebugMemberName   (rsStruct, 1, "fog_scale");
+    m_module.memberDecorateOffset (rsStruct, 1, offsetof(D3D9RenderStateInfo, fogScale));
+    m_module.setDebugMemberName   (rsStruct, 2, "fog_end");
+    m_module.memberDecorateOffset (rsStruct, 2, offsetof(D3D9RenderStateInfo, fogEnd));
+    m_module.setDebugMemberName   (rsStruct, 3, "fog_density");
+    m_module.memberDecorateOffset (rsStruct, 3, offsetof(D3D9RenderStateInfo, fogDensity));
+    m_module.setDebugMemberName   (rsStruct, 4, "alpha_ref");
+    m_module.memberDecorateOffset (rsStruct, 4, offsetof(D3D9RenderStateInfo, alphaRef));
+    
+    m_module.setDebugName         (m_rsBlock, "render_state");
+
+    m_interfaceSlots.pushConstOffset = 0;
+    m_interfaceSlots.pushConstSize = sizeof(D3D9RenderStateInfo);
   }
 
 
   void D3D9FFShaderCompiler::setupVS() {
+    setupRenderStateInfo();
+
     // VS Caps
     m_module.enableCapability(spv::CapabilityClipDistance);
     m_module.enableCapability(spv::CapabilityDrawParameters);
@@ -779,6 +1084,9 @@ namespace dxvk {
 
     m_vs.out.COLOR[0] = declareIO(false, DxsoSemantic{ DxsoUsage::Color, 0 });
     m_vs.out.COLOR[1] = declareIO(false, DxsoSemantic{ DxsoUsage::Color, 1 });
+
+    m_vs.in.FOG       = declareIO(true,  DxsoSemantic{ DxsoUsage::Fog,   0 });
+    m_vs.out.FOG      = declareIO(false, DxsoSemantic{ DxsoUsage::Fog,   0 });
   }
 
 
@@ -891,52 +1199,62 @@ namespace dxvk {
           case D3DTOP_SELECTARG1:
             dst = arg[1];
             break;
+
           case D3DTOP_SELECTARG2:
             dst = arg[2];
             break;
 
           case D3DTOP_MODULATE4X:
-          case D3DTOP_MODULATE2X:
-          case D3DTOP_MODULATE:
             dst = m_module.opFMul(m_vec4Type, arg[1], arg[2]);
-            if (op == D3DTOP_MODULATE4X || op == D3DTOP_MODULATE2X) {
-              float m = op == D3DTOP_MODULATE4X ? 4.0f : 2.0f;
-              dst = m_module.opFMul(m_vec4Type, dst,
-                m_module.constvec4f32(m, m, m, m));
-            }
+            dst = m_module.opVectorTimesScalar(m_vec4Type, dst, m_module.constf32(4.0f));
             break;
 
-          // Fallthrough...
+          case D3DTOP_MODULATE2X:
+            dst = m_module.opFMul(m_vec4Type, arg[1], arg[2]);
+            dst = m_module.opVectorTimesScalar(m_vec4Type, dst, m_module.constf32(2.0f));
+            break;
+
+          case D3DTOP_MODULATE:
+            dst = m_module.opFMul(m_vec4Type, arg[1], arg[2]);
+            break;
+
           case D3DTOP_ADDSIGNED2X:
+            arg[2] = m_module.opFSub(m_vec4Type, arg[2],
+              m_module.constvec4f32(0.5f, 0.5f, 0.5f, 0.5f));
+
+            dst = m_module.opFAdd(m_vec4Type, arg[1], arg[2]);
+            dst = m_module.opVectorTimesScalar(m_vec4Type, dst, m_module.constf32(2.0f));
+            break;
+
           case D3DTOP_ADDSIGNED:
             arg[2] = m_module.opFSub(m_vec4Type, arg[2],
               m_module.constvec4f32(0.5f, 0.5f, 0.5f, 0.5f));
+
+            dst = m_module.opFAdd(m_vec4Type, arg[1], arg[2]);
+            break;
+
           case D3DTOP_ADD:
             dst = m_module.opFAdd(m_vec4Type, arg[1], arg[2]);
-            if (op == D3DTOP_ADDSIGNED2X)
-              dst = m_module.opFMul(m_vec4Type, dst, m_module.constvec4f32(2.0f, 2.0f, 2.0f, 2.0f));
             break;
 
           case D3DTOP_SUBTRACT:
             dst = m_module.opFSub(m_vec4Type, arg[1], arg[2]);
             break;
 
-          case D3DTOP_ADDSMOOTH: {
-            uint32_t comp = Complement(arg[1]);
-            dst = m_module.opFFma(m_vec4Type, comp, arg[2], arg[1]);
+          case D3DTOP_ADDSMOOTH:
+            dst = m_module.opFFma(m_vec4Type, Complement(arg[1]), arg[2], arg[1]);
             break;
-          }
 
           case D3DTOP_BLENDDIFFUSEALPHA:
-            dst = m_module.opFMix(m_vec4Type, arg[1], arg[2], AlphaReplicate(diffuse));
+            dst = m_module.opFMix(m_vec4Type, arg[2], arg[1], AlphaReplicate(diffuse));
             break;
 
           case D3DTOP_BLENDTEXTUREALPHA:
-            dst = m_module.opFMix(m_vec4Type, arg[1], arg[2], AlphaReplicate(GetTexture()));
+            dst = m_module.opFMix(m_vec4Type, arg[2], arg[1], AlphaReplicate(GetTexture()));
             break;
 
           case D3DTOP_BLENDFACTORALPHA:
-            dst = m_module.opFMix(m_vec4Type, arg[1], arg[2], AlphaReplicate(m_ps.constants.textureFactor));
+            dst = m_module.opFMix(m_vec4Type, arg[2], arg[1], AlphaReplicate(m_ps.constants.textureFactor));
             break;
 
           case D3DTOP_BLENDTEXTUREALPHAPM:
@@ -944,7 +1262,7 @@ namespace dxvk {
             break;
 
           case D3DTOP_BLENDCURRENTALPHA:
-            dst = m_module.opFMix(m_vec4Type, arg[1], arg[2], AlphaReplicate(current));
+            dst = m_module.opFMix(m_vec4Type, arg[2], arg[1], AlphaReplicate(current));
             break;
 
           case D3DTOP_PREMODULATE:
@@ -987,10 +1305,11 @@ namespace dxvk {
             arg[2] = m_module.opFSub(vec3Type, arg[2], m_module.constvec3f32(-0.5f, -0.5f, -0.5f));
 
             // Do the dotting!
-            dst = ScalarReplicate(m_module.opDot(m_floatType, arg[1], arg[2]));
+            dst = m_module.opDot(m_floatType, arg[1], arg[2]);
 
-            // *= 4.0f
-            dst = m_module.opFMul(m_vec4Type, dst, m_module.constvec4f32(4.0f, 4.0f, 4.0f, 4.0f));
+            // Multiply by 4 and replicate -> vec4
+            dst = m_module.opFMul(m_floatType, dst, m_module.constf32(4.0f));
+            dst = ScalarReplicate(dst);
 
             // Saturate
             dst = m_module.opFClamp(m_vec4Type, dst,
@@ -1005,11 +1324,7 @@ namespace dxvk {
             break;
 
           case D3DTOP_LERP:
-            dst = m_module.opFMix(m_vec4Type, arg[2], arg[0], arg[1]);
-            break;
-
-          case D3DTOP_DISABLE:
-            Logger::warn("D3DTOP_DISABLE: this should be handled already!");
+            dst = m_module.opFMix(m_vec4Type, arg[2], arg[1], arg[0]);
             break;
 
           default:
@@ -1040,7 +1355,9 @@ namespace dxvk {
           alphaOp != D3DTOP_DISABLE ? GetArg(stage.AlphaArg2) : 0 };
 
       // Fast path if alpha/color path is identical.
-      if (colorOp == alphaOp && colorArgs == alphaArgs) {
+      // D3DTOP_DOTPRODUCT3 also has special quirky behaviour here.
+      const bool fastPath = colorOp == alphaOp && colorArgs == alphaArgs;
+      if (fastPath || colorOp == D3DTOP_DOTPRODUCT3) {
         if (colorOp != D3DTOP_DISABLE)
           dst = DoOp(colorOp, dst, colorArgs);
       }
@@ -1066,12 +1383,29 @@ namespace dxvk {
       }
     }
 
+    if (m_fsKey.SpecularEnable) {
+      uint32_t specular = m_module.opFMul(m_vec4Type, m_ps.in.COLOR[1], m_module.constvec4f32(1.0f, 1.0f, 1.0f, 0.0f));
+
+      current = m_module.opFAdd(m_vec4Type, current, specular);
+    }
+
+    D3D9FogContext fogCtx;
+    fogCtx.IsPixel     = true;
+    fogCtx.RangeFog    = false;
+    fogCtx.RenderState = m_rsBlock;
+    fogCtx.vPos        = m_ps.in.POS;
+    fogCtx.vFog        = m_ps.in.FOG;
+    fogCtx.oColor      = current;
+    current = DoFixedFunctionFog(m_module, fogCtx);
+
     m_module.opStore(m_ps.out.COLOR, current);
 
     alphaTestPS();
   }
 
   void D3D9FFShaderCompiler::setupPS() {
+    setupRenderStateInfo();
+
     // PS Caps
     m_module.enableCapability(spv::CapabilityDerivativeControl);
 
@@ -1083,6 +1417,9 @@ namespace dxvk {
 
     m_ps.in.COLOR[0] = declareIO(true, DxsoSemantic{ DxsoUsage::Color, 0 });
     m_ps.in.COLOR[1] = declareIO(true, DxsoSemantic{ DxsoUsage::Color, 1 });
+
+    m_ps.in.FOG      = declareIO(true, DxsoSemantic{ DxsoUsage::Fog, 0 });
+    m_ps.in.POS      = declareIO(true, DxsoSemantic{ DxsoUsage::Position, 0 }, spv::BuiltInFragCoord);
 
     m_ps.out.COLOR   = declareIO(false, DxsoSemantic{ DxsoUsage::Color, 0 });
 
@@ -1197,30 +1534,6 @@ namespace dxvk {
     uint32_t boolType = m_module.defBoolType();
     uint32_t floatPtr = m_module.defPointerType(m_floatType, spv::StorageClassPushConstant);
 
-    // Declare uniform buffer containing render states
-    enum RenderStateMember : uint32_t {
-      RsAlphaRef = 0,
-    };
-
-    std::array<uint32_t, 1> rsMembers = { {
-      m_floatType,
-    } };
-
-    uint32_t rsStruct = m_module.defStructTypeUnique(rsMembers.size(), rsMembers.data());
-    uint32_t rsBlock = m_module.newVar(
-      m_module.defPointerType(rsStruct, spv::StorageClassPushConstant),
-      spv::StorageClassPushConstant);
-
-    m_module.setDebugName(rsStruct, "render_state_t");
-    m_module.decorate(rsStruct, spv::DecorationBlock);
-    m_module.setDebugMemberName(rsStruct, 0, "alpha_ref");
-    m_module.memberDecorateOffset(rsStruct, 0, offsetof(D3D9RenderStateInfo, alphaRef));
-
-    m_module.setDebugName(rsBlock, "render_state");
-
-    m_interfaceSlots.pushConstOffset = 0;
-    m_interfaceSlots.pushConstSize = sizeof(D3D9RenderStateInfo);
-
     // Declare spec constants for render states
     uint32_t alphaTestId = m_module.specConstBool(false);
     uint32_t alphaFuncId = m_module.specConst32(m_module.defIntType(32, 0), uint32_t(VK_COMPARE_OP_ALWAYS));
@@ -1263,9 +1576,9 @@ namespace dxvk {
       1, &alphaComponentId);
 
     // Load alpha reference
-    uint32_t alphaRefMember = m_module.constu32(RsAlphaRef);
+    uint32_t alphaRefMember = m_module.constu32(uint32_t(D3D9RenderStateItem::AlphaRef));
     uint32_t alphaRefId = m_module.opLoad(m_floatType,
-      m_module.opAccessChain(floatPtr, rsBlock, 1, &alphaRefMember));
+      m_module.opAccessChain(floatPtr, m_rsBlock, 1, &alphaRefMember));
 
     // switch (alpha_func) { ... }
     m_module.opSelectionMerge(atestTestLabel, spv::SelectionControlMaskNone);
@@ -1429,6 +1742,8 @@ namespace dxvk {
     state.add(bhash(key.HasColor1));
     state.add(bhash(key.UseLighting));
     state.add(bhash(key.NormalizeNormals));
+    state.add(bhash(key.LocalViewer));
+    state.add(bhash(key.RangeFog));
 
     state.add(colorSourceHash(key.DiffuseSource));
     state.add(colorSourceHash(key.AmbientSource));
@@ -1450,7 +1765,10 @@ namespace dxvk {
   size_t D3D9FFShaderKeyHash::operator () (const D3D9FFShaderKeyFS& key) const {
     DxvkHashState state;
 
+    std::hash<bool> boolhash;
     std::hash<uint64_t> uint64hash;
+
+    state.add(boolhash(key.SpecularEnable));
 
     for (uint32_t i = 0; i < caps::TextureStageCount; i++)
       state.add(uint64hash(key.Stages->uint64[i]));

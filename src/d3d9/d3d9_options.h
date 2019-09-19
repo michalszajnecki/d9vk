@@ -60,10 +60,6 @@ namespace dxvk {
     /// R/W Framebuffer + Texture Hazards
     bool hasHazards;
 
-    /// Whether to use the submission thread for presentation.
-    /// May increase performance in some games with some drivers.
-    Tristate asyncPresent;
-
     /// Anisotropic filter override
     ///
     /// Enforces anisotropic filtering with the
@@ -75,6 +71,12 @@ namespace dxvk {
     /// Changes the max initial value used in
     /// tracking and GetAvailableTextureMem
     uint32_t maxAvailableMemory;
+
+    /// D3D9 Floating Point Emulation (anything * 0 = 0)
+    bool d3d9FloatEmulation;
+
+    /// Support the DF16 & DF24 texture format
+    bool supportDFFormats;
   };
 
 }

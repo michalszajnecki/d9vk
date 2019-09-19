@@ -146,7 +146,6 @@ namespace dxvk {
     // Rasterizer output registers
     DxsoRegisterPointer oPos;
     DxsoRegisterPointer oPSize;
-    DxsoRegisterPointer oFog;
   };
 
   /**
@@ -282,17 +281,9 @@ namespace dxvk {
 
     ////////////////////////////////////////
     // Constant buffer deffed mappings
-    std::array<
-      DxsoRegisterPointer,
-      caps::MaxFloatConstantsSoftware> m_cFloat;
-
-    std::array<
-      DxsoRegisterPointer,
-      caps::MaxOtherConstantsSoftware> m_cInt;
-
-    std::array<
-      DxsoRegisterPointer,
-      caps::MaxOtherConstantsSoftware> m_cBool;
+    std::array<uint32_t, caps::MaxFloatConstantsSoftware> m_cFloat;
+    std::array<uint32_t, caps::MaxOtherConstantsSoftware> m_cInt;
+    std::array<uint32_t, caps::MaxOtherConstantsSoftware> m_cBool;
 
     //////////////////////
     // Loop counter
@@ -340,11 +331,16 @@ namespace dxvk {
     DxsoCompilerVsPart m_vs;
     DxsoCompilerPsPart m_ps;
 
+    DxsoRegisterPointer m_fog;
+
     //////////////////////////////////////////
     // Bit masks containing used samplers
     // and render targets for hazard tracking
     uint32_t m_usedSamplers;
     uint32_t m_usedRTs;
+
+    uint32_t m_rsBlock = 0;
+    uint32_t m_mainFuncLabel = 0;
 
     //////////////////////////////////////
     // Common function definition methods
@@ -371,7 +367,7 @@ namespace dxvk {
 
     void emitFunctionEnd();
 
-    void emitFunctionLabel();
+    uint32_t emitFunctionLabel();
 
     void emitMainFunctionBegin();
 
@@ -433,8 +429,7 @@ namespace dxvk {
             spv::StorageClass storageClass = spv::StorageClassPrivate,
             spv::BuiltIn      builtIn      = spv::BuiltInMax);
 
-    DxsoRegisterPointer emitConstantPtr(
-            DxsoRegisterType  type,
+    DxsoRegisterValue emitLoadConstant(
       const DxsoBaseRegister& reg,
       const DxsoBaseRegister* relative);
 
@@ -470,7 +465,11 @@ namespace dxvk {
             DxsoRegisterValue       value,
             DxsoRegMask             writeMask,
             bool                    saturate,
-            int8_t                  shift) {
+            int8_t                  shift,
+            DxsoRegisterId          regId) {
+      if (regId.type == DxsoRegisterType::RasterizerOut && regId.num == RasterOutFog)
+        saturate = true;
+
       if (value.type.ctype == DxsoScalarType::Float32) {
         const uint32_t typeId = getVectorTypeId(value.type);
 
@@ -612,6 +611,8 @@ namespace dxvk {
     void emitInputSetup();
 
     void emitVsClipping();
+    void setupRenderStateInfo();
+    void emitFog();
     void emitPsProcessing();
     void emitOutputDepthClamp();
 

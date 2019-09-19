@@ -122,7 +122,9 @@ namespace dxvk {
     DxvkBlendMode           m_blendMode;
 
     D3D9Surface*            m_backBuffer = nullptr;
-    VkExtent2D              m_presentExtent;
+    
+    RECT                    m_srcRect;
+    RECT                    m_dstRect;
 
     DxvkSubmitStatus        m_presentStatus;
 
@@ -130,8 +132,6 @@ namespace dxvk {
 
     bool                    m_dirty    = true;
     bool                    m_vsync    = true;
-
-    bool                    m_asyncPresent = false;
 
     HWND                    m_window   = nullptr;
     HMONITOR                m_monitor  = nullptr;
@@ -162,8 +162,6 @@ namespace dxvk {
     void DestroyGammaTexture();
 
     void CreateHud();
-
-    void InitOptions();
 
     void InitRenderState();
 
@@ -200,7 +198,9 @@ namespace dxvk {
 
     void    UpdateMonitorInfo();
 
-    bool    UpdatePresentExtent(const RECT* pSourceRect);
+    bool    UpdatePresentRegion(const RECT* pSourceRect, const RECT* pDestRect);
+
+    VkExtent2D GetPresentExtent();
 
   };
 

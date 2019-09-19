@@ -14,6 +14,22 @@
 namespace dxvk {
 
   class D3D9DeviceEx;
+  class SpirvModule;
+
+  struct D3D9FogContext {
+    // General inputs...
+    bool     IsPixel;
+    bool     RangeFog;
+    uint32_t RenderState;
+    uint32_t vPos;
+    uint32_t vFog;
+
+    uint32_t oColor;
+  };
+
+  // Returns new oFog if VS
+  // Returns new oColor if PS
+  uint32_t DoFixedFunctionFog(SpirvModule& spvModule, const D3D9FogContext& fogCtx);
 
   struct D3D9FFShaderKeyVS {
     D3D9FFShaderKeyVS() {
@@ -29,6 +45,8 @@ namespace dxvk {
     bool UseLighting;
 
     bool NormalizeNormals;
+    bool LocalViewer;
+    bool RangeFog;
 
     D3DMATERIALCOLORSOURCE DiffuseSource;
     D3DMATERIALCOLORSOURCE AmbientSource;
@@ -69,9 +87,17 @@ namespace dxvk {
     D3D9FFShaderKeyFS() {
       // memcmp safety
       std::memset(this, 0, sizeof(*this));
+
+      for (uint32_t i = 0; i < caps::TextureStageCount; i++) {
+        auto& stage = Stages[i].data;
+
+        stage.ColorOp = D3DTOP_DISABLE;
+        stage.AlphaOp = D3DTOP_DISABLE;
+      }
     }
 
     D3D9FFShaderStage Stages[caps::TextureStageCount];
+    bool              SpecularEnable;
   };
 
   struct D3D9FFShaderKeyHash {

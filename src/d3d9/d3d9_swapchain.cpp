@@ -2,8 +2,8 @@
 #include "d3d9_surface.h"
 #include "d3d9_monitor.h"
 
-#include <dxgi_presenter_frag.h>
-#include <dxgi_presenter_vert.h>
+#include <d3d9_presenter_frag.h>
+#include <d3d9_presenter_vert.h>
 
 namespace dxvk {
 
@@ -12,6 +12,12 @@ namespace dxvk {
     if (x > 1.0f) x = 1.0f;
     return uint16_t(65535.0f * x);
   }
+
+
+  struct D3D9PresentInfo {
+    float scale[2];
+    float offset[2];
+  };
 
 
   D3D9SwapChainEx::D3D9SwapChainEx(
@@ -27,7 +33,7 @@ namespace dxvk {
     m_presentParams = *pPresentParams;
     m_window = m_presentParams.hDeviceWindow;
 
-    UpdatePresentExtent(nullptr);
+    UpdatePresentRegion(nullptr, nullptr);
     if (!pDevice->GetOptions()->deferSurfaceCreation)
       CreatePresenter();
 
@@ -37,7 +43,6 @@ namespace dxvk {
     InitRenderState();
     InitSamplers();
     InitShaders();
-    InitOptions();
     InitRamp();
 
     // Apply initial window mode and fullscreen state
@@ -83,8 +88,6 @@ namespace dxvk {
           DWORD    dwFlags) {
     auto lock = m_parent->LockDevice();
 
-    m_parent->FlushCursor();
-
     uint32_t presentInterval = m_presentParams.PresentationInterval;
 
     // This is not true directly in d3d9 to to timing differences that don't matter for us.
@@ -110,11 +113,12 @@ namespace dxvk {
     recreate   |= m_presenter == nullptr;
     recreate   |= window != m_window;    
 
+    m_window    = window;
+
     m_dirty    |= vsync != m_vsync;
-    m_dirty    |= UpdatePresentExtent(pSourceRect);
+    m_dirty    |= UpdatePresentRegion(pSourceRect, pDestRect);
     m_dirty    |= recreate;
     m_vsync     = vsync;
-    m_window    = window;
 
     if (recreate)
       CreatePresenter();
@@ -315,7 +319,11 @@ namespace dxvk {
     }
 
     m_presentParams = *pPresentParams;
-    UpdatePresentExtent(nullptr);
+
+    if (changeFullscreen)
+      SetGammaRamp(0, &m_ramp);
+
+    UpdatePresentRegion(nullptr, nullptr);
     CreateBackBuffer();
     return D3D_OK;
   }
@@ -352,7 +360,7 @@ namespace dxvk {
                  && cp[i].B == identity;
     }
 
-    if (isIdentity)
+    if (isIdentity || m_presentParams.Windowed)
       DestroyGammaTexture();
     else
       CreateGammaTexture(NumControlPoints, cp.data());
@@ -408,8 +416,7 @@ namespace dxvk {
       m_hud->update();
 
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
-      if (m_asyncPresent)
-        SynchronizePresent();
+      SynchronizePresent();
 
       m_context->beginRecording(
         m_device->createCommandList());
@@ -465,18 +472,27 @@ namespace dxvk {
       m_context->bindRenderTargets(renderTargets, false);
 
       VkViewport viewport;
-      viewport.x        = 0.0f;
-      viewport.y        = 0.0f;
-      viewport.width    = float(m_swapImage->info().extent.width);
-      viewport.height   = float(m_swapImage->info().extent.height);
+      viewport.x        = float(m_dstRect.left);
+      viewport.y        = float(m_dstRect.top);
+      viewport.width    = float(info.imageExtent.width  - m_dstRect.left);
+      viewport.height   = float(info.imageExtent.height - m_dstRect.top);
       viewport.minDepth = 0.0f;
       viewport.maxDepth = 1.0f;
+
+      D3D9PresentInfo presentInfoConsts;
+      presentInfoConsts.scale[0]  = float(m_srcRect.right  - m_srcRect.left) / float(m_swapImage->info().extent.width);
+      presentInfoConsts.scale[1]  = float(m_srcRect.bottom - m_srcRect.top)  / float(m_swapImage->info().extent.height);
+
+      presentInfoConsts.offset[0] = float(m_srcRect.left) / float(m_swapImage->info().extent.width);
+      presentInfoConsts.offset[1] = float(m_srcRect.top)  / float(m_swapImage->info().extent.height);
+
+      m_context->pushConstants(0, sizeof(D3D9PresentInfo), &presentInfoConsts);
       
       VkRect2D scissor;
       scissor.offset.x      = 0;
       scissor.offset.y      = 0;
-      scissor.extent.width  = info.imageExtent.width;
-      scissor.extent.height = info.imageExtent.height;
+      scissor.extent.width  = info.imageExtent.width  - m_dstRect.left;
+      scissor.extent.height = info.imageExtent.height - m_dstRect.top;
 
       m_context->setViewports(1, &viewport, &scissor);
 
@@ -510,8 +526,9 @@ namespace dxvk {
       m_device->presentImage(m_presenter,
         sync.present, &m_presentStatus);
 
-      if (!m_asyncPresent)
-        SynchronizePresent();
+      if (m_presentStatus.result != VK_NOT_READY
+       && m_presentStatus.result != VK_SUCCESS)
+        RecreateSwapChain(m_vsync);
     }
   }
 
@@ -531,7 +548,7 @@ namespace dxvk {
     m_presentStatus.result = VK_SUCCESS;
 
     vk::PresenterDesc presenterDesc;
-    presenterDesc.imageExtent     = m_presentExtent;
+    presenterDesc.imageExtent     = GetPresentExtent();
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(Vsync, presenterDesc.presentModes);
@@ -552,7 +569,7 @@ namespace dxvk {
     presenterDevice.adapter       = m_device->adapter()->handle();
 
     vk::PresenterDesc presenterDesc;
-    presenterDesc.imageExtent     = m_presentExtent;
+    presenterDesc.imageExtent     = GetPresentExtent();
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(false, presenterDesc.presentModes);
@@ -786,16 +803,6 @@ namespace dxvk {
   }
 
 
-  void D3D9SwapChainEx::InitOptions() {
-    // Not synchronizing after present seems to increase
-    // the likelyhood of hangs on Nvidia for some reason.
-    m_asyncPresent = !m_device->adapter()->matchesDriver(
-      DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0);
-
-    applyTristate(m_asyncPresent, m_parent->GetOptions()->asyncPresent);
-  }
-
-
   void D3D9SwapChainEx::InitRenderState() {
     m_iaState.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     m_iaState.primitiveRestart  = VK_FALSE;
@@ -875,8 +882,8 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::InitShaders() {
-    const SpirvCodeBuffer vsCode(dxgi_presenter_vert);
-    const SpirvCodeBuffer fsCode(dxgi_presenter_frag);
+    const SpirvCodeBuffer vsCode(d3d9_presenter_vert);
+    const SpirvCodeBuffer fsCode(d3d9_presenter_frag);
     
     const std::array<DxvkResourceSlot, 2> fsResourceSlots = {{
       { BindingIds::Image, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMAGE_VIEW_TYPE_2D },
@@ -885,7 +892,9 @@ namespace dxvk {
 
     m_vertShader = m_device->createShader(
       VK_SHADER_STAGE_VERTEX_BIT,
-      0, nullptr, { 0u, 1u },
+      0, nullptr,
+      { 0u, 1u,
+        0u, sizeof(D3D9PresentInfo) },
       vsCode);
     
     m_fragShader = m_device->createShader(
@@ -1082,17 +1091,45 @@ namespace dxvk {
     return SetMonitorDisplayMode(GetDefaultMonitor(), &mode);
   }
 
-  bool    D3D9SwapChainEx::UpdatePresentExtent(const RECT* pSourceRect) {
-    VkExtent2D oldExtent = m_presentExtent;
-
-    if (pSourceRect != nullptr)
-      m_presentExtent = VkExtent2D{ uint32_t(pSourceRect->right - pSourceRect->left), uint32_t(pSourceRect->bottom - pSourceRect->top) };
+  bool    D3D9SwapChainEx::UpdatePresentRegion(const RECT* pSourceRect, const RECT* pDestRect) {
+    if (pSourceRect == nullptr) {
+      m_srcRect.top    = 0;
+      m_srcRect.left   = 0;
+      m_srcRect.right  = m_presentParams.BackBufferWidth;
+      m_srcRect.bottom = m_presentParams.BackBufferHeight;
+    }
     else
-      m_presentExtent = VkExtent2D{ m_presentParams.BackBufferWidth, m_presentParams.BackBufferHeight };
+      m_srcRect = *pSourceRect;
 
-    m_presentExtent   = VkExtent2D{ std::max(m_presentExtent.width, 1u), std::max(m_presentExtent.height, 1u) };
+    RECT dstRect;
+    if (pDestRect == nullptr) {
+      // TODO: Should we hook WM_SIZE message for this?
+      UINT width, height;
+      GetWindowClientSize(m_window, &width, &height);
 
-    return m_presentExtent != oldExtent;
+      dstRect.top    = 0;
+      dstRect.left   = 0;
+      dstRect.right  = LONG(width);
+      dstRect.bottom = LONG(height);
+    }
+    else
+      dstRect = *pDestRect;
+
+    bool recreate = 
+       m_dstRect.left   != dstRect.left
+    || m_dstRect.top    != dstRect.top
+    || m_dstRect.right  != dstRect.right
+    || m_dstRect.bottom != dstRect.bottom;
+
+    m_dstRect = dstRect;
+
+    return recreate;
+  }
+
+  VkExtent2D D3D9SwapChainEx::GetPresentExtent() {
+    return VkExtent2D {
+      std::max<uint32_t>(m_dstRect.right  - m_dstRect.left, 1u),
+      std::max<uint32_t>(m_dstRect.bottom - m_dstRect.top,  1u) };
   }
 
   void    D3D9SwapChainEx::UpdateMonitorInfo() {

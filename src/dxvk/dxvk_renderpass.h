@@ -2,12 +2,15 @@
 
 #include <mutex>
 #include <vector>
+#include <unordered_map>
 
 #include "dxvk_hash.h"
 #include "dxvk_include.h"
 #include "dxvk_limits.h"
 
 namespace dxvk {
+
+  class DxvkDevice;
   
   /**
    * \brief Format and layout for a render target
@@ -199,12 +202,11 @@ namespace dxvk {
    * be created, but no two render pass objects
    * will have the same format.
    */
-  class DxvkRenderPassPool : public RcObject {
+  class DxvkRenderPassPool {
     
   public:
     
-    DxvkRenderPassPool(
-      const Rc<vk::DeviceFn>& vkd);
+    DxvkRenderPassPool(const DxvkDevice* device);
     ~DxvkRenderPassPool();
     
     /**

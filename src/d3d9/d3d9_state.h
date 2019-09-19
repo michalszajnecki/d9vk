@@ -32,12 +32,21 @@ namespace dxvk {
     float coeff[4];
   };
   struct D3D9RenderStateInfo {
-    float alphaRef = 0.0f;
+    std::array<float, 3> fogColor = { };
+    float fogScale   = 0.0f;
+    float fogEnd     = 1.0f;
+    float fogDensity = 1.0f;
+
+    float alphaRef   = 0.0f;
   };
 
   enum class D3D9RenderStateItem {
-    AlphaRef = 0,
-    Count    = 1
+    FogColor   = 0,
+    FogScale   = 1,
+    FogEnd,
+    FogDensity,
+    AlphaRef,
+    Count
   };
 
 
@@ -56,7 +65,8 @@ namespace dxvk {
       Ambient  = Vector4(light.Ambient.r,  light.Ambient.g,  light.Ambient.b,  light.Ambient.a);
 
       Position  = viewMtx * Vector4(light.Position.x,  light.Position.y,  light.Position.z,  1.0f);
-      Direction = viewMtx * Vector4(light.Direction.x, light.Direction.y, light.Direction.z, 1.0f);
+      Direction = Vector4(light.Direction.x, light.Direction.y, light.Direction.z, 0.0f);
+      Direction = normalize(viewMtx * Direction);
 
       Type         = light.Type;
       Range        = light.Range;
@@ -203,13 +213,17 @@ namespace dxvk {
           D3D9CapturableState* pState,
           UINT                 StartRegister,
     const T*                   pConstantData,
-          UINT                 Count) {
+          UINT                 Count,
+          bool                 FloatEmu) {
     auto UpdateHelper = [&] (auto& set) {
       if constexpr (ConstantType == D3D9ConstantType::Float) {
         auto begin = reinterpret_cast<const Vector4*>(pConstantData);
         auto end   = begin + Count;
 
-        std::transform(begin, end, set.fConsts.begin() + StartRegister, replaceNaN);
+        if (!FloatEmu)
+          std::copy(begin, end, set.fConsts.begin() + StartRegister);
+        else
+          std::transform(begin, end, set.fConsts.begin() + StartRegister, replaceNaN);
       }
       else if constexpr (ConstantType == D3D9ConstantType::Int) {
         auto begin = reinterpret_cast<const Vector4i*>(pConstantData);

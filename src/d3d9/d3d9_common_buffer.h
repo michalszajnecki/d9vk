@@ -36,28 +36,30 @@ namespace dxvk {
   };
 
   struct D3D9Range {
-    D3D9Range() { clear(); }
+    D3D9Range() { Clear(); }
 
     D3D9Range(uint32_t min, uint32_t max)
       : min(min), max(max) { }
 
-    bool degenerate() { return min == max; }
+    bool IsDegenerate() { return min == max; }
 
-    bool overlap(D3D9Range range) {
-      if (degenerate()) {
+    void Conjoin(D3D9Range range) {
+      if (IsDegenerate())
         *this = range;
-        return false;
+      else {
+        min = std::min(range.min, min);
+        max = std::max(range.max, max);
       }
-
-      bool overlaps = range.max > min && range.min < max;
-
-      min = std::min(range.min, min);
-      max = std::max(range.max, max);
-
-      return overlaps;
     }
 
-    void clear() { min = 0; max = 0; }
+    bool Overlaps(D3D9Range range) {
+      if (IsDegenerate())
+        return false;
+
+      return range.max > min && range.min < max;;
+    }
+
+    void Clear() { min = 0; max = 0; }
 
     uint32_t min = 0;
     uint32_t max = 0;
@@ -126,11 +128,9 @@ namespace dxvk {
       return m_sliceHandle;
     }
 
-    DWORD SetMapFlags(DWORD Flags) {
-      DWORD old = m_mapFlags;
-      m_mapFlags = Flags;
-      return old;
-    }
+    DWORD GetMapFlags(DWORD Flags) { return m_mapFlags; }
+
+    DWORD SetMapFlags(DWORD Flags) { return std::exchange(m_mapFlags, Flags); }
 
     const D3D9_BUFFER_DESC* Desc() const {
       return &m_desc;
@@ -142,6 +142,14 @@ namespace dxvk {
     D3D9Range& DirtyRange() { return m_dirtyRange; }
 
     bool SetReadLocked(bool state) { return std::exchange(m_readLocked, state); }
+
+    uint32_t IncrementLockCount() { return ++m_lockCount; }
+    uint32_t DecrementLockCount() {
+      if (m_lockCount == 0)
+        return 0;
+
+      return --m_lockCount;
+    }
 
   private:
 
@@ -172,6 +180,8 @@ namespace dxvk {
 
     D3D9Range                   m_lockRange;
     D3D9Range                   m_dirtyRange;
+
+    uint32_t                    m_lockCount = 0;
 
   };
 
