@@ -15,14 +15,14 @@ namespace dxvk {
     D3D11_VK_QUERY_ENDED,
   };
   
-  class D3D11Query : public D3D11DeviceChild<ID3D11Predicate> {
+  class D3D11Query : public D3D11DeviceChild<ID3D11Query1> {
     constexpr static uint32_t MaxGpuQueries = 2;
     constexpr static uint32_t MaxGpuEvents  = 1;
   public:
     
     D3D11Query(
-            D3D11Device*      device,
-      const D3D11_QUERY_DESC& desc);
+            D3D11Device*        device,
+      const D3D11_QUERY_DESC1&  desc);
     
     ~D3D11Query();
     
@@ -31,22 +31,37 @@ namespace dxvk {
             void**  ppvObject) final;
     
     void STDMETHODCALLTYPE GetDevice(
-            ID3D11Device **ppDevice) final;
+            ID3D11Device** ppDevice) final;
     
     UINT STDMETHODCALLTYPE GetDataSize();
     
-    void STDMETHODCALLTYPE GetDesc(
-            D3D11_QUERY_DESC *pDesc) final;
-    
+    void STDMETHODCALLTYPE GetDesc(D3D11_QUERY_DESC* pDesc) final;
+
+    void STDMETHODCALLTYPE GetDesc1(D3D11_QUERY_DESC1* pDesc) final;
+
     void Begin(DxvkContext* ctx);
     
     void End(DxvkContext* ctx);
     
+    bool STDMETHODCALLTYPE DoBegin();
+
+    bool STDMETHODCALLTYPE DoEnd();
+
     HRESULT STDMETHODCALLTYPE GetData(
             void*                             pData,
             UINT                              GetDataFlags);
     
     DxvkBufferSlice GetPredicate(DxvkContext* ctx);
+
+    void DoDeferredEnd() {
+      m_state = D3D11_VK_QUERY_ENDED;
+      m_resetCtr.fetch_add(1, std::memory_order_acquire);
+    }
+
+    bool IsScoped() const {
+      return m_desc.Query != D3D11_QUERY_EVENT
+          && m_desc.Query != D3D11_QUERY_TIMESTAMP;
+    }
 
     bool IsEvent() const {
       return m_desc.Query == D3D11_QUERY_EVENT;
@@ -68,26 +83,42 @@ namespace dxvk {
     D3D10Query* GetD3D10Iface() {
       return &m_d3d10;
     }
+
+    static HRESULT ValidateDesc(const D3D11_QUERY_DESC1* pDesc);
+
+    static ID3D11Predicate* AsPredicate(ID3D11Query* pQuery) {
+      // ID3D11Predicate and ID3D11Query have the same vtable. This
+      // saves us some headache in all query-related functions.
+      return static_cast<ID3D11Predicate*>(pQuery);
+    }
+    
+    static D3D11Query* FromPredicate(ID3D11Predicate* pPredicate) {
+      return static_cast<D3D11Query*>(static_cast<ID3D11Query*>(pPredicate));
+    }
     
   private:
     
     D3D11Device* const m_device;
-    D3D11_QUERY_DESC   m_desc;
+    D3D11_QUERY_DESC1  m_desc;
 
     D3D11_VK_QUERY_STATE m_state;
     
     std::array<Rc<DxvkGpuQuery>, MaxGpuQueries> m_query;
     std::array<Rc<DxvkGpuEvent>, MaxGpuEvents>  m_event;
 
-    sync::Spinlock  m_predicateLock;
-    DxvkBufferSlice m_predicate;
+    sync::Spinlock m_predicateLock;
+    Rc<DxvkBuffer> m_predicate;
 
     D3D10Query m_d3d10;
 
     uint32_t m_stallMask = 0;
     bool     m_stallFlag = false;
 
+    std::atomic<uint32_t> m_resetCtr = { 0u };
+
     UINT64 GetTimestampQueryFrequency() const;
+
+    Rc<DxvkBuffer> CreatePredicateBuffer();
     
   };
   

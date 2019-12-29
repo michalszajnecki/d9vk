@@ -1,5 +1,7 @@
 #include "d3d9_options.h"
 
+#include "d3d9_caps.h"
+
 namespace dxvk {
 
   static int32_t parsePciId(const std::string& str) {
@@ -31,30 +33,44 @@ namespace dxvk {
     // Fetch these as a string representing a hexadecimal number and parse it.
     this->customVendorId        = parsePciId(config.getOption<std::string>("d3d9.customVendorId"));
     this->customDeviceId        = parsePciId(config.getOption<std::string>("d3d9.customDeviceId"));
+    this->customDeviceDesc      = config.getOption<std::string>("d3d9.customDeviceDesc");
 
-    this->maxFrameLatency       = config.getOption<int32_t>("d3d9.maxFrameLatency", 0);
-    this->presentInterval       = config.getOption<int32_t>("d3d9.presentInterval", -1);
-    this->shaderModel           = config.getOption<int32_t>("d3d9.shaderModel",     3);
-    this->evictManagedOnUnlock  = config.getOption<bool>   ("d3d9.evictManagedOnUnlock", false);
-    this->dpiAware              = config.getOption<bool>   ("d3d9.dpiAware", true);
-    this->allowLockFlagReadonly = config.getOption<bool>   ("d3d9.allowLockFlagReadonly", true);
-    this->strictConstantCopies  = config.getOption<bool>   ("d3d9.strictConstantCopies", false);
-    this->strictPow             = config.getOption<bool>   ("d3d9.strictPow",            true);
-    this->lenientClear          = config.getOption<bool>   ("d3d9.lenientClear",         false);
-    this->numBackBuffers        = config.getOption<int32_t>("d3d9.numBackBuffers", 0);
-    this->deferSurfaceCreation  = config.getOption<bool>   ("d3d9.deferSurfaceCreation", false);
-    this->hasHazards            = config.getOption<bool>   ("d3d9.hasHazards",           false);
-    this->samplerAnisotropy     = config.getOption<int32_t>("d3d9.samplerAnisotropy", -1);
-    this->maxAvailableMemory    = config.getOption<uint32_t>("d3d9.maxAvailableMemory", UINT32_MAX);
-    this->supportDFFormats      = config.getOption<bool>("d3d9.supportDFFormats", true);
+    const int32_t vendorId = this->customDeviceId != -1 ? this->customDeviceId : (adapter != nullptr ? adapter->deviceProperties().vendorID : 0);
+
+    this->maxFrameLatency       = config.getOption<int32_t> ("d3d9.maxFrameLatency",       0);
+    this->presentInterval       = config.getOption<int32_t> ("d3d9.presentInterval",       -1);
+    this->shaderModel           = config.getOption<int32_t> ("d3d9.shaderModel",           3);
+    this->evictManagedOnUnlock  = config.getOption<bool>    ("d3d9.evictManagedOnUnlock",  false);
+    this->dpiAware              = config.getOption<bool>    ("d3d9.dpiAware",              true);
+    this->allowLockFlagReadonly = config.getOption<bool>    ("d3d9.allowLockFlagReadonly", true);
+    this->strictConstantCopies  = config.getOption<bool>    ("d3d9.strictConstantCopies",  false);
+    this->strictPow             = config.getOption<bool>    ("d3d9.strictPow",             true);
+    this->lenientClear          = config.getOption<bool>    ("d3d9.lenientClear",          false);
+    this->numBackBuffers        = config.getOption<int32_t> ("d3d9.numBackBuffers",        0);
+    this->deferSurfaceCreation  = config.getOption<bool>    ("d3d9.deferSurfaceCreation",  false);
+    this->samplerAnisotropy     = config.getOption<int32_t> ("d3d9.samplerAnisotropy",     -1);
+    this->maxAvailableMemory    = config.getOption<int32_t> ("d3d9.maxAvailableMemory",    4096);
+    this->supportDFFormats      = config.getOption<bool>    ("d3d9.supportDFFormats",      true);
+    this->supportX4R4G4B4       = config.getOption<bool>    ("d3d9.supportX4R4G4B4",       true);
+    this->supportD32            = config.getOption<bool>    ("d3d9.supportD32",            true);
+    this->swvpFloatCount        = config.getOption<int32_t> ("d3d9.swvpFloatCount",        caps::MaxFloatConstantsSoftware);
+    this->swvpIntCount          = config.getOption<int32_t> ("d3d9.swvpIntCount",          caps::MaxOtherConstantsSoftware);
+    this->swvpBoolCount         = config.getOption<int32_t> ("d3d9.swvpBoolCount",         caps::MaxOtherConstantsSoftware);
+    this->disableA8RT           = config.getOption<bool>    ("d3d9.disableA8RT",           false);
+    this->invariantPosition     = config.getOption<bool>    ("d3d9.invariantPosition",     false);
+    this->memoryTrackTest       = config.getOption<bool>    ("d3d9.memoryTrackTest",       false);
+    this->supportVCache         = config.getOption<bool>    ("d3d9.supportVCache",         vendorId == 0x10de);
+    this->enableDialogMode      = config.getOption<bool>    ("d3d9.enableDialogMode",      false);
+
+    this->forceAspectRatio      = config.getOption<std::string>("d3d9.forceAspectRatio",   "");
+
+    // If we are not Nvidia, enable general hazards.
+    this->generalHazards = adapter == nullptr || !adapter->matchesDriver(DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0);
+    applyTristate(this->generalHazards, config.getOption<Tristate>("d3d9.generalHazards", Tristate::Auto));
 
     this->d3d9FloatEmulation    = true; // <-- Future Extension?
 
     applyTristate(this->d3d9FloatEmulation, config.getOption<Tristate>("d3d9.floatEmulation", Tristate::Auto));
-
-    // This is not necessary on Nvidia.
-    if (adapter != nullptr && adapter->matchesDriver(DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0))
-      this->hasHazards          = false;
   }
 
 }

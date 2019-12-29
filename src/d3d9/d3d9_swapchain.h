@@ -1,9 +1,12 @@
 #pragma once
 
 #include "d3d9_device_child.h"
+#include "d3d9_device.h"
 #include "d3d9_format.h"
 
 #include "../dxvk/hud/dxvk_hud.h"
+
+#include "../util/sync/sync_signal.h"
 
 #include <vector>
 
@@ -62,7 +65,7 @@ namespace dxvk {
 
     HRESULT STDMETHODCALLTYPE GetDisplayModeEx(D3DDISPLAYMODEEX* pMode, D3DDISPLAYROTATION* pRotation);
 
-    HRESULT Reset(
+    void    Reset(
             D3DPRESENT_PARAMETERS* pPresentParams,
             D3DDISPLAYMODEEX*      pFullscreenDisplayMode);
 
@@ -75,6 +78,10 @@ namespace dxvk {
     void    GetGammaRamp(D3DGAMMARAMP* pRamp);
 
     void    Invalidate(HWND hWindow);
+
+    HRESULT SetDialogBoxMode(bool bEnableDialogs);
+
+    D3D9Surface* GetBackBuffer(UINT iBackBuffer);
 
   private:
 
@@ -121,7 +128,7 @@ namespace dxvk {
     DxvkLogicOpState        m_loState;
     DxvkBlendMode           m_blendMode;
 
-    D3D9Surface*            m_backBuffer = nullptr;
+    Com<D3D9Surface, false> m_backBuffer = nullptr;
     
     RECT                    m_srcRect;
     RECT                    m_dstRect;
@@ -130,8 +137,16 @@ namespace dxvk {
 
     std::vector<Rc<DxvkImageView>> m_imageViews;
 
+
+    uint64_t                m_frameId           = D3D9DeviceEx::MaxFrameLatency;
+    uint32_t                m_frameLatencyCap   = 0;
+    Rc<sync::Fence>         m_frameLatencySignal;
+
     bool                    m_dirty    = true;
     bool                    m_vsync    = true;
+
+    bool                    m_dialog;
+    bool                    m_dialogChanged = false;
 
     HWND                    m_window   = nullptr;
     HMONITOR                m_monitor  = nullptr;
@@ -142,9 +157,9 @@ namespace dxvk {
 
     void PresentImage(UINT PresentInterval);
 
-    void SynchronizePresent();
+    void SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId);
 
-    void FlushDevice();
+    void SynchronizePresent();
 
     void RecreateSwapChain(
         BOOL                      Vsync);
@@ -170,6 +185,8 @@ namespace dxvk {
     void InitShaders();
 
     void InitRamp();
+
+    uint32_t GetActualFrameLatency();
 
     uint32_t PickFormats(
             D3D9Format                Format,
@@ -201,6 +218,8 @@ namespace dxvk {
     bool    UpdatePresentRegion(const RECT* pSourceRect, const RECT* pDestRect);
 
     VkExtent2D GetPresentExtent();
+
+    VkFullScreenExclusiveEXT PickFullscreenMode();
 
   };
 

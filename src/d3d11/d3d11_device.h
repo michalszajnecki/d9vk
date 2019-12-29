@@ -14,7 +14,7 @@
 
 #include "../util/com/com_private_data.h"
 
-#include "d3d11_counter_buffer.h"
+#include "d3d11_cmdlist.h"
 #include "d3d11_initializer.h"
 #include "d3d11_interfaces.h"
 #include "d3d11_interop.h"
@@ -45,7 +45,7 @@ namespace dxvk {
    * Implements the ID3D11Device interfaces
    * as part of a \ref D3D11DeviceContainer.
    */
-  class D3D11Device final : public ID3D11Device1 {
+  class D3D11Device final : public ID3D11Device5 {
     /// Maximum number of resource init commands per command buffer
     constexpr static uint64_t InitCommandThreshold = 50;
   public:
@@ -80,25 +80,50 @@ namespace dxvk {
       const D3D11_SUBRESOURCE_DATA* pInitialData,
             ID3D11Texture2D**       ppTexture2D);
     
+    HRESULT STDMETHODCALLTYPE CreateTexture2D1(
+      const D3D11_TEXTURE2D_DESC1*  pDesc,
+      const D3D11_SUBRESOURCE_DATA* pInitialData,
+            ID3D11Texture2D1**      ppTexture2D);
+    
     HRESULT STDMETHODCALLTYPE CreateTexture3D(
       const D3D11_TEXTURE3D_DESC*   pDesc,
       const D3D11_SUBRESOURCE_DATA* pInitialData,
             ID3D11Texture3D**       ppTexture3D);
+    
+    HRESULT STDMETHODCALLTYPE CreateTexture3D1(
+      const D3D11_TEXTURE3D_DESC1*  pDesc,
+      const D3D11_SUBRESOURCE_DATA* pInitialData,
+            ID3D11Texture3D1**      ppTexture3D);
     
     HRESULT STDMETHODCALLTYPE CreateShaderResourceView(
             ID3D11Resource*                   pResource,
       const D3D11_SHADER_RESOURCE_VIEW_DESC*  pDesc,
             ID3D11ShaderResourceView**        ppSRView);
     
+    HRESULT STDMETHODCALLTYPE CreateShaderResourceView1(
+            ID3D11Resource*                   pResource,
+      const D3D11_SHADER_RESOURCE_VIEW_DESC1* pDesc,
+            ID3D11ShaderResourceView1**       ppSRView);
+    
     HRESULT STDMETHODCALLTYPE CreateUnorderedAccessView(
             ID3D11Resource*                   pResource,
       const D3D11_UNORDERED_ACCESS_VIEW_DESC* pDesc,
             ID3D11UnorderedAccessView**       ppUAView);
     
+    HRESULT STDMETHODCALLTYPE CreateUnorderedAccessView1(
+            ID3D11Resource*                   pResource,
+      const D3D11_UNORDERED_ACCESS_VIEW_DESC1* pDesc,
+            ID3D11UnorderedAccessView1**      ppUAView);
+    
     HRESULT STDMETHODCALLTYPE CreateRenderTargetView(
             ID3D11Resource*                   pResource,
       const D3D11_RENDER_TARGET_VIEW_DESC*    pDesc,
             ID3D11RenderTargetView**          ppRTView);
+    
+    HRESULT STDMETHODCALLTYPE CreateRenderTargetView1(
+            ID3D11Resource*                   pResource,
+      const D3D11_RENDER_TARGET_VIEW_DESC1*   pDesc,
+            ID3D11RenderTargetView1**         ppRTView);
     
     HRESULT STDMETHODCALLTYPE CreateDepthStencilView(
             ID3D11Resource*                   pResource,
@@ -182,6 +207,10 @@ namespace dxvk {
       const D3D11_RASTERIZER_DESC1*     pRasterizerDesc,
             ID3D11RasterizerState1**    ppRasterizerState);
     
+    HRESULT STDMETHODCALLTYPE CreateRasterizerState2(
+      const D3D11_RASTERIZER_DESC2*     pRasterizerDesc,
+            ID3D11RasterizerState2**    ppRasterizerState);
+    
     HRESULT STDMETHODCALLTYPE CreateSamplerState(
       const D3D11_SAMPLER_DESC*         pSamplerDesc,
             ID3D11SamplerState**        ppSamplerState);
@@ -189,6 +218,10 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE CreateQuery(
       const D3D11_QUERY_DESC*           pQueryDesc,
             ID3D11Query**               ppQuery);
+    
+    HRESULT STDMETHODCALLTYPE CreateQuery1(
+      const D3D11_QUERY_DESC1*          pQueryDesc,
+            ID3D11Query1**              ppQuery);
     
     HRESULT STDMETHODCALLTYPE CreatePredicate(
       const D3D11_QUERY_DESC*           pPredicateDesc,
@@ -206,6 +239,14 @@ namespace dxvk {
             UINT                        ContextFlags,
             ID3D11DeviceContext1**      ppDeferredContext);
 
+    HRESULT STDMETHODCALLTYPE CreateDeferredContext2(
+            UINT                        ContextFlags,
+            ID3D11DeviceContext2**      ppDeferredContext);
+
+    HRESULT STDMETHODCALLTYPE CreateDeferredContext3(
+            UINT                        ContextFlags,
+            ID3D11DeviceContext3**      ppDeferredContext);
+
     HRESULT STDMETHODCALLTYPE CreateDeviceContextState(
             UINT                        Flags,
       const D3D_FEATURE_LEVEL*          pFeatureLevels,
@@ -214,7 +255,29 @@ namespace dxvk {
             REFIID                      EmulatedInterface,
             D3D_FEATURE_LEVEL*          pChosenFeatureLevel,
             ID3DDeviceContextState**    ppContextState);
-    
+
+    HRESULT STDMETHODCALLTYPE CreateFence(
+            UINT64                      InitialValue,
+            D3D11_FENCE_FLAG            Flags,
+            REFIID                      ReturnedInterface,
+            void**                      ppFence);
+
+    void STDMETHODCALLTYPE ReadFromSubresource(
+            void*                       pDstData,
+            UINT                        DstRowPitch,
+            UINT                        DstDepthPitch,
+            ID3D11Resource*             pSrcResource,
+            UINT                        SrcSubresource,
+      const D3D11_BOX*                  pSrcBox);
+
+    void STDMETHODCALLTYPE WriteToSubresource(
+            ID3D11Resource*             pDstResource,
+            UINT                        DstSubresource,
+      const D3D11_BOX*                  pDstBox,
+      const void*                       pSrcData,
+            UINT                        SrcRowPitch,
+            UINT                        SrcDepthPitch);
+
     HRESULT STDMETHODCALLTYPE OpenSharedResource(
             HANDLE      hResource,
             REFIID      ReturnedInterface,
@@ -231,6 +294,11 @@ namespace dxvk {
             REFIID      returnedInterface,
             void**      ppResource);
     
+    HRESULT STDMETHODCALLTYPE OpenSharedFence(
+            HANDLE      hFence,
+            REFIID      ReturnedInterface,
+            void**      ppFence);
+
     HRESULT STDMETHODCALLTYPE CheckFormatSupport(
             DXGI_FORMAT Format,
             UINT*       pFormatSupport);
@@ -238,6 +306,12 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE CheckMultisampleQualityLevels(
             DXGI_FORMAT Format,
             UINT        SampleCount,
+            UINT*       pNumQualityLevels);
+    
+    HRESULT STDMETHODCALLTYPE CheckMultisampleQualityLevels1(
+            DXGI_FORMAT Format,
+            UINT        SampleCount,
+            UINT        Flags,
             UINT*       pNumQualityLevels);
     
     void STDMETHODCALLTYPE CheckCounterInfo(
@@ -285,10 +359,32 @@ namespace dxvk {
     void STDMETHODCALLTYPE GetImmediateContext1(
             ID3D11DeviceContext1** ppImmediateContext);
     
+    void STDMETHODCALLTYPE GetImmediateContext2(
+            ID3D11DeviceContext2** ppImmediateContext);
+    
+    void STDMETHODCALLTYPE GetImmediateContext3(
+            ID3D11DeviceContext3** ppImmediateContext);
+    
     HRESULT STDMETHODCALLTYPE SetExceptionMode(UINT RaiseFlags);
     
     UINT STDMETHODCALLTYPE GetExceptionMode();
     
+    void STDMETHODCALLTYPE GetResourceTiling(
+            ID3D11Resource*           pTiledResource,
+            UINT*                     pNumTilesForEntireResource,
+            D3D11_PACKED_MIP_DESC*    pPackedMipDesc,
+            D3D11_TILE_SHAPE*         pStandardTileShapeForNonPackedMips,
+            UINT*                     pNumSubresourceTilings,
+            UINT                      FirstSubresourceTilingToGet,
+            D3D11_SUBRESOURCE_TILING* pSubresourceTilingsForNonPackedMips);
+
+    HRESULT STDMETHODCALLTYPE RegisterDeviceRemovedEvent(
+            HANDLE                    hEvent,
+            DWORD*                    pdwCookie);
+
+    void STDMETHODCALLTYPE UnregisterDeviceRemoved(
+            DWORD                     dwCookie);
+
     Rc<DxvkDevice> GetDXVKDevice() {
       return m_dxvkDevice;
     }
@@ -324,15 +420,8 @@ namespace dxvk {
       return m_d3d10Device;
     }
     
-    DxvkBufferSlice AllocUavCounterSlice() { return m_uavCounters->AllocSlice(); }
-    DxvkBufferSlice AllocXfbCounterSlice() { return m_xfbCounters->AllocSlice(); }
-    DxvkBufferSlice AllocPredicateSlice () { return m_predicates ->AllocSlice(); }
-    
-    void FreeUavCounterSlice(const DxvkBufferSlice& Slice) { m_uavCounters->FreeSlice(Slice); }
-    void FreeXfbCounterSlice(const DxvkBufferSlice& Slice) { m_xfbCounters->FreeSlice(Slice); }
-    void FreePredicateSlice (const DxvkBufferSlice& Slice) { m_predicates ->FreeSlice(Slice); }
-    
     static bool CheckFeatureLevelSupport(
+      const Rc<DxvkInstance>& instance,
       const Rc<DxvkAdapter>&  adapter,
             D3D_FEATURE_LEVEL featureLevel);
     
@@ -360,20 +449,12 @@ namespace dxvk {
     D3D11ImmediateContext*          m_context     = nullptr;
     D3D10Device*                    m_d3d10Device = nullptr;
 
-    Rc<D3D11CounterBuffer>          m_uavCounters;
-    Rc<D3D11CounterBuffer>          m_xfbCounters;
-    Rc<D3D11CounterBuffer>          m_predicates;
-    
     D3D11StateObjectSet<D3D11BlendState>        m_bsStateObjects;
     D3D11StateObjectSet<D3D11DepthStencilState> m_dsStateObjects;
     D3D11StateObjectSet<D3D11RasterizerState>   m_rsStateObjects;
     D3D11StateObjectSet<D3D11SamplerState>      m_samplerObjects;
     D3D11ShaderModuleSet                        m_shaderModules;
     
-    Rc<D3D11CounterBuffer> CreateUAVCounterBuffer();
-    Rc<D3D11CounterBuffer> CreateXFBCounterBuffer();
-    Rc<D3D11CounterBuffer> CreatePredicateBuffer();
-
     HRESULT CreateShaderModule(
             D3D11CommonShader*      pShaderModule,
             DxvkShaderKey           ShaderKey,
@@ -391,8 +472,19 @@ namespace dxvk {
             VkFormat    Format,
             VkImageType Type) const;
     
+    template<typename Void>
+    void CopySubresourceData(
+            Void*                       pData,
+            UINT                        RowPitch,
+            UINT                        DepthPitch,
+            ID3D11Resource*             pResource,
+            UINT                        Subresource,
+      const D3D11_BOX*                  pBox);
+    
+    BOOL IsUnifiedMemoryArch();
+
     static D3D_FEATURE_LEVEL GetMaxFeatureLevel(
-      const Rc<DxvkAdapter>&        Adapter);
+      const Rc<DxvkInstance>&           pInstance);
     
   };
   
@@ -468,15 +560,16 @@ namespace dxvk {
    * Stores all the objects that contribute to the D3D11
    * device implementation, including the DXGI device.
    */
-  class D3D11DXGIDevice : public DxgiObject<IDXGIDevice3> {
+  class D3D11DXGIDevice : public DxgiObject<IDXGIDevice4> {
     constexpr static uint32_t DefaultFrameLatency = 3;
   public:
     
     D3D11DXGIDevice(
-          IDXGIAdapter*       pAdapter,
-          DxvkAdapter*        pDxvkAdapter,
-          D3D_FEATURE_LEVEL   FeatureLevel,
-          UINT                FeatureFlags);
+            IDXGIAdapter*       pAdapter,
+      const Rc<DxvkInstance>&   pDxvkInstance,
+      const Rc<DxvkAdapter>&    pDxvkAdapter,
+            D3D_FEATURE_LEVEL   FeatureLevel,
+            UINT                FeatureFlags);
     
     ~D3D11DXGIDevice();
     
@@ -520,25 +613,34 @@ namespace dxvk {
             IDXGIResource* const*         ppResources,
             DXGI_OFFER_RESOURCE_PRIORITY  Priority) final;
         
+    HRESULT STDMETHODCALLTYPE OfferResources1( 
+            UINT                          NumResources,
+            IDXGIResource* const*         ppResources,
+            DXGI_OFFER_RESOURCE_PRIORITY  Priority,
+            UINT                          Flags) final;
+    
     HRESULT STDMETHODCALLTYPE ReclaimResources( 
             UINT                          NumResources,
             IDXGIResource* const*         ppResources,
             BOOL*                         pDiscarded) final;
+    
+    HRESULT STDMETHODCALLTYPE ReclaimResources1(
+            UINT                          NumResources,
+            IDXGIResource* const*         ppResources,
+            DXGI_RECLAIM_RESOURCE_RESULTS* pResults) final;
         
     HRESULT STDMETHODCALLTYPE EnqueueSetEvent( 
             HANDLE                hEvent) final;
     
     void STDMETHODCALLTYPE Trim() final;
     
-    Rc<sync::Signal> STDMETHODCALLTYPE GetFrameSyncEvent(
-            UINT                  BufferCount);
-
     Rc<DxvkDevice> STDMETHODCALLTYPE GetDXVKDevice();
 
   private:
 
     Com<IDXGIAdapter>   m_dxgiAdapter;
 
+    Rc<DxvkInstance>    m_dxvkInstance;
     Rc<DxvkAdapter>     m_dxvkAdapter;
     Rc<DxvkDevice>      m_dxvkDevice;
 
@@ -548,11 +650,7 @@ namespace dxvk {
     
     WineDXGISwapChainFactory m_wineFactory;
     
-    uint32_t m_frameLatencyCap = 0;
-    uint32_t m_frameLatency    = DefaultFrameLatency;
-    uint32_t m_frameId         = 0;
-
-    std::array<Rc<sync::Signal>, 16> m_frameEvents;
+    uint32_t m_frameLatency = DefaultFrameLatency;
 
     Rc<DxvkDevice> CreateDevice(D3D_FEATURE_LEVEL FeatureLevel);
 

@@ -155,8 +155,8 @@ namespace dxvk {
 
   VkBlendFactor DecodeBlendFactor(D3DBLEND BlendFactor, bool IsAlpha) {
     switch (BlendFactor) {
-      case D3DBLEND_ZERO:            return VK_BLEND_FACTOR_ZERO;
       default:
+      case D3DBLEND_ZERO:            return VK_BLEND_FACTOR_ZERO;
       case D3DBLEND_ONE:             return VK_BLEND_FACTOR_ONE;
       case D3DBLEND_SRCCOLOR:        return VK_BLEND_FACTOR_SRC_COLOR;
       case D3DBLEND_INVSRCCOLOR:     return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
@@ -366,6 +366,30 @@ namespace dxvk {
       case D3DDECLTYPE_DEC3N:     return 4;
       case D3DDECLTYPE_FLOAT16_2: return 2 * 2;
       case D3DDECLTYPE_FLOAT16_4: return 4 * 2;
+      default:                    return 0;
+    }
+  }
+
+
+  uint32_t GetDecltypeCount(D3DDECLTYPE Type) {
+    switch (Type) {
+      case D3DDECLTYPE_FLOAT1:    return 1;
+      case D3DDECLTYPE_FLOAT2:    return 2;
+      case D3DDECLTYPE_FLOAT3:    return 3;
+      case D3DDECLTYPE_FLOAT4:    return 4;
+      case D3DDECLTYPE_D3DCOLOR:  return 4;
+      case D3DDECLTYPE_UBYTE4:    return 4;
+      case D3DDECLTYPE_SHORT2:    return 2;
+      case D3DDECLTYPE_SHORT4:    return 4;
+      case D3DDECLTYPE_UBYTE4N:   return 4;
+      case D3DDECLTYPE_SHORT2N:   return 2;
+      case D3DDECLTYPE_SHORT4N:   return 4;
+      case D3DDECLTYPE_USHORT2N:  return 2;
+      case D3DDECLTYPE_USHORT4N:  return 4;
+      case D3DDECLTYPE_UDEC3:     return 3;
+      case D3DDECLTYPE_DEC3N:     return 3;
+      case D3DDECLTYPE_FLOAT16_2: return 2;
+      case D3DDECLTYPE_FLOAT16_4: return 4;
       default:                    return 0;
     }
   }

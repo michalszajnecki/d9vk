@@ -16,6 +16,7 @@ namespace dxvk {
     /// on a different GPU than they do and behave differently.
     int32_t customVendorId;
     int32_t customDeviceId;
+    std::string customDeviceDesc;
 
     /// Present interval. Overrides the value
     /// in D3DPRESENT_PARAMS used in swapchain present.
@@ -57,8 +58,9 @@ namespace dxvk {
     /// Defer surface creation
     bool deferSurfaceCreation;
 
-    /// R/W Framebuffer + Texture Hazards
-    bool hasHazards;
+    /// Whether to transition to general
+    /// for rendering hazards
+    bool generalHazards;
 
     /// Anisotropic filter override
     ///
@@ -77,6 +79,39 @@ namespace dxvk {
 
     /// Support the DF16 & DF24 texture format
     bool supportDFFormats;
+
+    /// Support X4R4G4B4
+    bool supportX4R4G4B4;
+
+    /// Support D32
+    bool supportD32;
+
+    /// SWVP Constant Limits
+    int32_t swvpFloatCount;
+    int32_t swvpIntCount;
+    int32_t swvpBoolCount;
+
+    /// Disable D3DFMT_A8 for render targets.
+    /// Specifically to work around a game
+    /// bug in The Sims 2 that happens on native too!
+    bool disableA8RT;
+
+    /// Work around a NV driver quirk
+    /// Fixes flickering/z-fighting in some games.
+    bool invariantPosition;
+
+    /// Whether or not to respect memory tracking for
+    /// failing resource allocation.
+    bool memoryTrackTest;
+
+    /// Support VCACHE query
+    bool supportVCache;
+
+    /// Forced aspect ratio, disable other modes
+    std::string forceAspectRatio;
+
+    /// Enable dialog mode (ie. no exclusive fullscreen)
+    bool enableDialogMode;
   };
 
 }

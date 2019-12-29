@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_set>
+
 #include "spirv_code_buffer.h"
 
 namespace dxvk {
@@ -137,6 +139,12 @@ namespace dxvk {
             int32_t                 y,
             int32_t                 z,
             int32_t                 w);
+
+    uint32_t constvec4b32(
+            bool                    x,
+            bool                    y,
+            bool                    z,
+            bool                    w);
     
     uint32_t constvec4u32(
             uint32_t                x,
@@ -162,6 +170,10 @@ namespace dxvk {
     uint32_t constfReplicant(
             float                   replicant,
             uint32_t                count);
+
+    uint32_t constbReplicant(
+            bool                    replicant,
+            uint32_t                count);
     
     uint32_t constComposite(
             uint32_t                typeId,
@@ -171,6 +183,13 @@ namespace dxvk {
     uint32_t constUndef(
             uint32_t                typeId);
     
+    uint32_t lateConst32(
+            uint32_t                typeId);
+
+    void setLateConst(
+            uint32_t                constId,
+      const uint32_t*               argIds);
+
     uint32_t specConstBool(
             bool                    v);
     
@@ -961,6 +980,10 @@ namespace dxvk {
             uint32_t                condition,
             uint32_t                operand1,
             uint32_t                operand2);
+
+    uint32_t opIsNan(
+            uint32_t                resultType,
+            uint32_t                operand);
     
     uint32_t opFunctionCall(
             uint32_t                resultType,
@@ -1203,6 +1226,8 @@ namespace dxvk {
     SpirvCodeBuffer m_typeConstDefs;
     SpirvCodeBuffer m_variables;
     SpirvCodeBuffer m_code;
+
+    std::unordered_set<uint32_t> m_lateConsts;
     
     uint32_t defType(
             spv::Op                 op, 

@@ -288,6 +288,7 @@ namespace dxvk {
     OutputDepthGe           = 38,
     OutputDepthLe           = 39,
     CycleCounter            = 40,
+    OutputStencilRef        = 41,
   };
   
   
@@ -623,6 +624,12 @@ namespace dxvk {
     Typed      = 0,
     Raw        = 1,
     Structured = 2,
+  };
+
+
+  enum class DxbcConstantBufferAccessType : uint32_t {
+    StaticallyIndexed = 0,
+    DynamicallyIndexed = 1,
   };
   
 }

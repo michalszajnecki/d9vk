@@ -56,7 +56,8 @@ namespace dxvk {
      || riid == __uuidof(IDXGIOutput1)
      || riid == __uuidof(IDXGIOutput2)
      || riid == __uuidof(IDXGIOutput3)
-     || riid == __uuidof(IDXGIOutput4)) {
+     || riid == __uuidof(IDXGIOutput4)
+     || riid == __uuidof(IDXGIOutput5)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -218,7 +219,7 @@ namespace dxvk {
     std::vector<DXGI_MODE_DESC1> modes;
 
     if (pDesc)
-      modes.resize(*pNumModes);
+      modes.resize(std::max(1u, *pNumModes));
     
     HRESULT hr = GetDisplayModeList1(
       EnumFormat, Flags, pNumModes,
@@ -245,6 +246,12 @@ namespace dxvk {
     if (pNumModes == nullptr)
       return DXGI_ERROR_INVALID_CALL;
     
+    // Special case, just return zero modes
+    if (EnumFormat == DXGI_FORMAT_UNKNOWN) {
+      *pNumModes = 0;
+      return S_OK;
+    }
+
     // Query monitor info to get the device name
     ::MONITORINFOEXW monInfo;
     monInfo.cbSize = sizeof(monInfo);
@@ -256,7 +263,8 @@ namespace dxvk {
     
     // Walk over all modes that the display supports and
     // return those that match the requested format etc.
-    DEVMODEW devMode;
+    DEVMODEW devMode = { };
+    devMode.dmSize = sizeof(DEVMODEW);
     
     uint32_t srcModeId = 0;
     uint32_t dstModeId = 0;
@@ -416,12 +424,28 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiOutput::DuplicateOutput(
           IUnknown*                 pDevice,
           IDXGIOutputDuplication**  ppOutputDuplication) {
+    return DuplicateOutput1(pDevice, 0, 0, nullptr, ppOutputDuplication);
+  }
+
+
+  HRESULT STDMETHODCALLTYPE DxgiOutput::DuplicateOutput1(
+          IUnknown*                 pDevice,
+          UINT                      Flags,
+          UINT                      SupportedFormatsCount,
+    const DXGI_FORMAT*              pSupportedFormats,
+          IDXGIOutputDuplication**  ppOutputDuplication) {
+    InitReturnPtr(ppOutputDuplication);
+
+    if (!pDevice)
+      return E_INVALIDARG;
+    
     static bool s_errorShown = false;
 
     if (!std::exchange(s_errorShown, true))
-      Logger::warn("DxgiOutput::DuplicateOutput: Stub");
+      Logger::err("DxgiOutput::DuplicateOutput1: Not implemented");
     
-    return E_NOTIMPL;
+    // At least return a valid error code
+    return DXGI_ERROR_UNSUPPORTED;
   }
 
 
@@ -467,10 +491,12 @@ namespace dxvk {
 
     if (TargetMode.RefreshRate.Numerator && TargetMode.RefreshRate.Denominator) {
       minDiffRefreshRate = std::accumulate(
-        Modes.begin(), Modes.end(), std::numeric_limits<uint32_t>::max(),
-        [&TargetMode] (uint32_t current, const DXGI_MODE_DESC1& mode) {
-          uint32_t rate = mode.RefreshRate.Numerator * TargetMode.RefreshRate.Denominator / mode.RefreshRate.Denominator;
-          uint32_t diff = std::abs(int32_t(rate - TargetMode.RefreshRate.Numerator));
+        Modes.begin(), Modes.end(), std::numeric_limits<uint64_t>::max(),
+        [&TargetMode] (uint64_t current, const DXGI_MODE_DESC1& mode) {
+          uint64_t rate = uint64_t(mode.RefreshRate.Numerator)
+                        * uint64_t(TargetMode.RefreshRate.Denominator)
+                        / uint64_t(mode.RefreshRate.Denominator);
+          uint64_t diff = std::abs(int64_t(rate - uint64_t(TargetMode.RefreshRate.Numerator)));
           return std::min(current, diff);
         });
     }
@@ -507,8 +533,10 @@ namespace dxvk {
       }
 
       if (TargetMode.RefreshRate.Numerator && TargetMode.RefreshRate.Denominator) {
-        uint32_t rate = it->RefreshRate.Numerator * TargetMode.RefreshRate.Denominator / it->RefreshRate.Denominator;
-        uint32_t diff = std::abs(int32_t(rate - TargetMode.RefreshRate.Numerator));
+        uint64_t rate = uint64_t(it->RefreshRate.Numerator)
+                      * uint64_t(TargetMode.RefreshRate.Denominator)
+                      / uint64_t(it->RefreshRate.Denominator);
+        uint64_t diff = std::abs(int64_t(rate - uint64_t(TargetMode.RefreshRate.Numerator)));
         skipMode |= diff != minDiffRefreshRate;
       }
 

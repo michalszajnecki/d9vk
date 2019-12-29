@@ -9,16 +9,45 @@
 
 namespace dxvk {
   
+  class DxgiAdapter;
   class DxgiFactory;
   class DxgiOutput;
+
+
+  class DxgiVkAdapter : public IDXGIVkInteropAdapter {
+
+  public:
+
+    DxgiVkAdapter(DxgiAdapter* pAdapter);
+
+    ULONG STDMETHODCALLTYPE AddRef();
+    
+    ULONG STDMETHODCALLTYPE Release();
+    
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+            REFIID                    riid,
+            void**                    ppvObject);
+    
+    void STDMETHODCALLTYPE GetVulkanHandles(
+            VkInstance*               pInstance,
+            VkPhysicalDevice*         pPhysDev);
+
+  private:
+
+    DxgiAdapter* m_adapter;
+
+  };
+
   
-  class DxgiAdapter : public DxgiObject<IDXGIVkAdapter> {
+  class DxgiAdapter : public DxgiObject<IDXGIDXVKAdapter> {
     
   public:
     
     DxgiAdapter(
-            DxgiFactory*      factory,
-      const Rc<DxvkAdapter>&  adapter);
+            DxgiFactory*              factory,
+      const Rc<DxvkAdapter>&          adapter,
+            UINT                      index);
+
     ~DxgiAdapter();
     
     HRESULT STDMETHODCALLTYPE QueryInterface(
@@ -72,11 +101,15 @@ namespace dxvk {
 
     Rc<DxvkAdapter> STDMETHODCALLTYPE GetDXVKAdapter() final;
     
+    Rc<DxvkInstance> STDMETHODCALLTYPE GetDXVKInstance() final;
+
   private:
     
     Com<DxgiFactory>  m_factory;
     Rc<DxvkAdapter>   m_adapter;
+    DxgiVkAdapter     m_interop;
     
+    UINT              m_index;
     UINT64            m_memReservation[2] = { 0, 0 };
     
   };

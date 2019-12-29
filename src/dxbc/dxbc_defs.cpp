@@ -209,7 +209,9 @@ namespace dxvk {
       { DxbcOperandKind::SrcReg, DxbcScalarType::Sint32  },
     } },
     /* Label                                */
-    { },
+    { 1, DxbcInstClass::ControlFlow, {
+      { DxbcOperandKind::DstReg, DxbcScalarType::Uint32 },
+    } },
     /* Ld                                   */
     { 3, DxbcInstClass::TextureFetch, {
       { DxbcOperandKind::DstReg, DxbcScalarType::Float32 },
@@ -1075,7 +1077,12 @@ namespace dxvk {
       { DxbcOperandKind::SrcReg, DxbcScalarType::Float64 },
     } },
     /* Msad                                 */
-    { },
+    { 4, DxbcInstClass::VectorMsad, {
+      { DxbcOperandKind::DstReg, DxbcScalarType::Uint32 },
+      { DxbcOperandKind::SrcReg, DxbcScalarType::Uint32 },
+      { DxbcOperandKind::SrcReg, DxbcScalarType::Uint32 },
+      { DxbcOperandKind::SrcReg, DxbcScalarType::Uint32 },
+    } },
     /* DtoI                                 */
     { 2, DxbcInstClass::ConvertFloat64, {
       { DxbcOperandKind::DstReg, DxbcScalarType::Sint32  },

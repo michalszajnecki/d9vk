@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "dxvk_bind_mask.h"
+#include "dxvk_graphics_state.h"
 #include "dxvk_pipecache.h"
 #include "dxvk_pipelayout.h"
 #include "dxvk_resource.h"
@@ -20,17 +21,14 @@ namespace dxvk {
    */
   struct DxvkComputePipelineShaders {
     Rc<DxvkShader> cs;
-  };
 
+    bool eq(const DxvkComputePipelineShaders& other) const {
+      return cs == other.cs;
+    }
 
-  /**
-   * \brief Compute pipeline state info
-   */
-  struct DxvkComputePipelineStateInfo {
-    bool operator == (const DxvkComputePipelineStateInfo& other) const;
-    bool operator != (const DxvkComputePipelineStateInfo& other) const;
-    
-    DxvkBindingMask bsBindingMask;
+    size_t hash() const {
+      return DxvkShader::getHash(cs);
+    }
   };
 
 
@@ -95,6 +93,14 @@ namespace dxvk {
             DxvkComputePipelineShaders  shaders);
 
     ~DxvkComputePipeline();
+    
+    /**
+     * \brief Shaders used by the pipeline
+     * \returns Shaders used by the pipeline
+     */
+    const DxvkComputePipelineShaders& shaders() const {
+      return m_shaders;
+    }
     
     /**
      * \brief Pipeline layout

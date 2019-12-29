@@ -33,7 +33,21 @@ namespace dxvk {
     RasterizerSampleCount       = SpecConstantRangeStart + 0,
     FirstPipelineConstant
   };
-  
+
+  /**
+   * \brief Shader flags
+   *
+   * Provides extra information about the features
+   * used by a shader.
+   */
+  enum DxvkShaderFlag : uint64_t {
+    HasSampleRateShading,
+    HasTransformFeedback,
+    ExportsStencilRef,
+    ExportsViewportIndexLayerFromVertexStage,
+  };
+
+  using DxvkShaderFlags = Flags<DxvkShaderFlag>;
   
   /**
    * \brief Shader interface slots
@@ -107,7 +121,8 @@ namespace dxvk {
    * \brief Shader module create info
    */
   struct DxvkShaderModuleCreateInfo {
-    bool fsDualSrcBlend;
+    bool      fsDualSrcBlend  = false;
+    uint32_t  undefinedInputs = 0;
   };
   
   
@@ -143,16 +158,12 @@ namespace dxvk {
     }
     
     /**
-     * \brief Checks whether a capability is enabled
-     * 
-     * If the shader contains an \c OpCapability
-     * instruction with the given capability, it
-     * is considered enabled. This may be required
-     * to correctly set up certain pipeline states.
-     * \param [in] cap The capability to check
-     * \returns \c true if \c cap is enabled
+     * \brief Retrieves shader flags
+     * \returns Shader flags
      */
-    bool hasCapability(spv::Capability cap);
+    DxvkShaderFlags flags() const {
+      return m_flags;
+    }
     
     /**
      * \brief Adds resource slots definitions to a mapping
@@ -223,6 +234,7 @@ namespace dxvk {
      */
     void setShaderKey(const DxvkShaderKey& key) {
       m_key = key;
+      m_hash = key.hash();
     }
 
     /**
@@ -232,6 +244,18 @@ namespace dxvk {
     DxvkShaderKey getShaderKey() const {
       return m_key;
     }
+
+    /**
+     * \brief Get lookup hash
+     * 
+     * Retrieves a non-unique hash value derived from the
+     * shader key which can be used to perform lookups.
+     * This is better than relying on the pointer value.
+     * \returns Hash value for map lookups
+     */
+    size_t getHash() const {
+      return m_hash;
+    }
     
     /**
      * \brief Retrieves debug name
@@ -239,6 +263,18 @@ namespace dxvk {
      */
     std::string debugName() const {
       return m_key.toString();
+    }
+
+    /**
+     * \brief Get lookup hash for a shader
+     *
+     * Convenience method that returns \c 0 for a null
+     * pointer, and the shader's lookup hash otherwise.
+     * \param [in] shader The shader
+     * \returns The shader's lookup hash, or 0
+     */
+    static size_t getHash(const Rc<DxvkShader>& shader) {
+      return shader != nullptr ? shader->getHash() : 0;
     }
     
   private:
@@ -249,15 +285,17 @@ namespace dxvk {
     std::vector<DxvkResourceSlot> m_slots;
     std::vector<size_t>           m_idOffsets;
     DxvkInterfaceSlots            m_interface;
+    DxvkShaderFlags               m_flags;
     DxvkShaderOptions             m_options;
     DxvkShaderConstData           m_constData;
     DxvkShaderKey                 m_key;
-
-    std::vector<spv::Capability>  m_capabilities;
+    size_t                        m_hash = 0;
 
     size_t m_o1IdxOffset = 0;
     size_t m_o1LocOffset = 0;
-    
+
+    static void eliminateInput(SpirvCodeBuffer& code, uint32_t location);
+
   };
   
 

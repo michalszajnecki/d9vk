@@ -8,6 +8,15 @@
   
 namespace dxvk {
   
+  template<typename T>
+  class NoWrapper : public T {
+
+  public:
+
+    virtual ~NoWrapper() { }
+
+  };
+  
   /**
    * \brief Reference-counted COM object
    *
@@ -24,8 +33,8 @@ namespace dxvk {
    * holding on to objects which the application wants
    * to delete.
    */
-  template<typename... Base>
-  class ComObject : public Base... {
+  template<typename Base>
+  class ComObject : public Base {
     
   public:
     
@@ -71,18 +80,18 @@ namespace dxvk {
   };
 
   /**
-  * \brief Clamped, reference-counted COM object
-  *
-  * This version of ComObject ensures that the reference
-  * count does not wrap around if a release happens at zero.
-  * eg. [m_refCount = 0]
-  *     Release()
-  *     [m_refCount = 0]
-  * This is a notable quirk of D3D9's COM implementation
-  * and is relied upon by some games.
-  */
-  template<typename... Base>
-  class ComObjectClamp : public ComObject<Base...> {
+   * \brief Clamped, reference-counted COM object
+   *
+   * This version of ComObject ensures that the reference
+   * count does not wrap around if a release happens at zero.
+   * eg. [m_refCount = 0]
+   *     Release()
+   *     [m_refCount = 0]
+   * This is a notable quirk of D3D9's COM implementation
+   * and is relied upon by some games.
+   */
+  template<typename Base>
+  class ComObjectClamp : public ComObject<Base> {
 
   public:
 

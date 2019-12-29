@@ -23,6 +23,8 @@
 #include "d3d9_fixed_function.h"
 #include "d3d9_swvp_emu.h"
 
+#include "d3d9_shader_permutations.h"
+
 #include <vector>
 #include <type_traits>
 #include <unordered_map>
@@ -38,8 +40,9 @@ namespace dxvk {
   class D3D9Initializer;
   class D3D9Query;
   class D3D9StateBlock;
+  class D3D9FormatHelper;
 
-  enum class D3D9DeviceFlag : uint64_t {
+  enum class D3D9DeviceFlag : uint32_t {
     DirtyFramebuffer,
     DirtyClipPlanes,
     DirtyDepthStencilState,
@@ -57,6 +60,7 @@ namespace dxvk {
     DirtyFogEnd,
 
     DirtyFFVertexData,
+    DirtyFFVertexBlend,
     DirtyFFVertexShader,
     DirtyFFPixelShader,
     DirtyFFViewport,
@@ -66,7 +70,8 @@ namespace dxvk {
     UpDirtiedVertices,
     UpDirtiedIndices,
     ValidSampleMask,
-    DirtyDepthBounds
+    DirtyDepthBounds,
+    DirtyPointScale,
   };
 
   using D3D9DeviceFlags = Flags<D3D9DeviceFlag>;
@@ -95,16 +100,19 @@ namespace dxvk {
     constexpr static uint32_t MaxPendingSubmits = 6;
 
     constexpr static uint32_t NullStreamIdx = caps::MaxStreams;
+
+    friend class D3D9SwapChainEx;
   public:
 
     D3D9DeviceEx(
-            D3D9InterfaceEx*  pParent,
-            D3D9Adapter*      pAdapter,
-            D3DDEVTYPE        DeviceType,
-            HWND              hFocusWindow,
-            DWORD             BehaviorFlags,
-            D3DDISPLAYMODEEX* pDisplayMode,
-            Rc<DxvkDevice>    dxvkDevice);
+            D3D9InterfaceEx*       pParent,
+            D3D9Adapter*           pAdapter,
+            D3DDEVTYPE             DeviceType,
+            HWND                   hFocusWindow,
+            DWORD                  BehaviorFlags,
+            D3DPRESENT_PARAMETERS* pPresentationParameters,
+            D3DDISPLAYMODEEX*      pDisplayMode,
+            Rc<DxvkDevice>         dxvkDevice);
 
     ~D3D9DeviceEx();
 
@@ -647,9 +655,10 @@ namespace dxvk {
       return m_dxvkDevice;
     }
 
-    Rc<sync::Signal> GetFrameSyncEvent(UINT BufferCount);
-
     D3D9_VK_FORMAT_MAPPING LookupFormat(
+      D3D9Format            Format) const;
+
+    DxvkFormatInfo UnsupportedFormatInfo(
       D3D9Format            Format) const;
 
     bool WaitForResource(
@@ -705,6 +714,9 @@ namespace dxvk {
             void**                  ppbData,
             DWORD                   Flags);
 
+    HRESULT FlushBuffer(
+            D3D9CommonBuffer*       pResource);
+
     HRESULT UnlockBuffer(
             D3D9CommonBuffer*       pResource);
 
@@ -718,7 +730,18 @@ namespace dxvk {
 
     void Flush();
 
-    void CheckForHazards();
+    D3D9ShaderMasks GetShaderMasks();
+
+    void UpdateActiveRTs(uint32_t index);
+
+    void UpdateActiveRTTextures(uint32_t index);
+
+    void UpdateActiveHazards();
+
+    void MarkRenderHazards();
+
+    template <bool Points>
+    void UpdatePointMode();
 
     void UpdateFog();
 
@@ -730,6 +753,14 @@ namespace dxvk {
       const bool alphaTest = m_state.renderStates[D3DRS_ALPHATESTENABLE] != 0;
 
       return m_amdATOC || (m_nvATOC && alphaTest);
+    }
+
+    inline bool IsAlphaTestEnabled() {
+      return m_state.renderStates[D3DRS_ALPHATESTENABLE] && !IsAlphaToCoverageEnabled();
+    }
+
+    inline bool IsZTestEnabled() {
+      return m_state.renderStates[D3DRS_ZENABLE] && m_state.depthStencil != nullptr;
     }
 
     void BindMultiSampleState();
@@ -745,6 +776,15 @@ namespace dxvk {
     void BindRasterizerState();
 
     void BindAlphaTestState();
+
+    template <DxsoProgramType ShaderStage, typename HardwareLayoutType, typename SoftwareLayoutType, typename ShaderType>
+    inline void UploadHardwareConstantSet(void* pData, const SoftwareLayoutType& Src, const ShaderType& Shader);
+
+    template <typename SoftwareLayoutType, typename ShaderType>
+    inline void UploadSoftwareConstantSet(void* pData, const SoftwareLayoutType& Src, const D3D9ConstantLayout& Layout, const ShaderType& Shader);
+
+    template <DxsoProgramType ShaderStage, typename HardwareLayoutType, typename SoftwareLayoutType, typename ShaderType>
+    inline void UploadConstantSet(const SoftwareLayoutType& Src, const D3D9ConstantLayout& Layout, const ShaderType& Shader);
     
     template <DxsoProgramType ShaderStage>
     void UploadConstants();
@@ -772,11 +812,12 @@ namespace dxvk {
     
     uint32_t GetInstanceCount() const;
 
-    void PrepareDraw(bool up = false);
+    void PrepareDraw(D3DPRIMITIVETYPE PrimitiveType, bool up = false);
 
+    template <DxsoProgramType ShaderStage>
     void BindShader(
-            DxsoProgramType                   ShaderStage,
-      const D3D9CommonShader*                 pShaderModule);
+      const D3D9CommonShader*                 pShaderModule,
+            D3D9ShaderPermutation             Permutation);
 
     void BindInputLayout();
 
@@ -803,20 +844,41 @@ namespace dxvk {
     void Begin(D3D9Query* pQuery);
     void End(D3D9Query* pQuery);
 
-    void SetVertexBoolBitfield(uint32_t mask, uint32_t bits);
-    void SetPixelBoolBitfield(uint32_t mask, uint32_t bits);
+    void SetVertexBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits);
+    void SetPixelBoolBitfield (uint32_t idx, uint32_t mask, uint32_t bits);
 
     void FlushImplicit(BOOL StrongHint);
 
     bool ChangeReportedMemory(int64_t delta) {
+      if (IsExtended())
+        return true;
+
       m_availableMemory += delta;
 
-      return m_availableMemory > 0;
+      return !m_d3d9Options.memoryTrackTest || m_availableMemory > 0;
     }
 
     void ResolveZ();
 
     void TransitionImage(D3D9CommonTexture* pResource, VkImageLayout NewLayout);
+
+    void TransformImage(
+            D3D9CommonTexture*       pResource,
+      const VkImageSubresourceRange* pSubresources,
+            VkImageLayout            OldLayout,
+            VkImageLayout            NewLayout);
+
+    const D3D9ConstantLayout& GetVertexConstantLayout() { return m_vsLayout; }
+    const D3D9ConstantLayout& GetPixelConstantLayout()  { return m_psLayout; }
+
+    HRESULT ResetState(D3DPRESENT_PARAMETERS* pPresentationParameters);
+    HRESULT ResetSwapChain(D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode);
+
+    HRESULT InitialReset(D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode);
+
+    UINT GetSamplerCount() const {
+      return m_samplerCount.load();
+    }
 
   private:
 
@@ -828,18 +890,15 @@ namespace dxvk {
 
     Rc<DxvkDataBuffer>              m_updateBuffer;
     DxvkCsChunkPool                 m_csChunkPool;
-    std::chrono::high_resolution_clock::time_point m_lastFlush
-      = std::chrono::high_resolution_clock::now();
+    dxvk::high_resolution_clock::time_point m_lastFlush
+      = dxvk::high_resolution_clock::now();
     DxvkCsThread                    m_csThread;
     bool                            m_csIsBusy = false;
 
-    uint32_t                        m_frameLatencyCap;
-    uint32_t                        m_frameLatency;
-    uint32_t                        m_frameId = 0;
-    std::array<Rc<sync::Signal>,
-      MaxFrameLatency>              m_frameEvents;
+    uint32_t                        m_frameLatency = DefaultFrameLatency;
 
     D3D9Initializer*                m_initializer = nullptr;
+    D3D9FormatHelper*               m_converter   = nullptr;
 
     DxvkCsChunkRef                  m_csChunk;
 
@@ -870,6 +929,21 @@ namespace dxvk {
       }
     }
 
+    bool CanSWVP() {
+      return m_behaviorFlags & (D3DCREATE_MIXED_VERTEXPROCESSING | D3DCREATE_SOFTWARE_VERTEXPROCESSING);
+    }
+
+    inline constexpr D3D9ShaderPermutation GetVertexShaderPermutation() {
+      return D3D9ShaderPermutations::None;
+    }
+
+    inline D3D9ShaderPermutation GetPixelShaderPermutation() {
+      if (unlikely(m_state.renderStates[D3DRS_SHADEMODE] == D3DSHADE_FLAT))
+        return D3D9ShaderPermutations::FlatShade;
+
+      return D3D9ShaderPermutations::None;
+    }
+
     Com<D3D9InterfaceEx>            m_parent;
     D3DDEVTYPE                      m_deviceType;
     HWND                            m_window;
@@ -886,6 +960,7 @@ namespace dxvk {
     Rc<DxvkBuffer>                  m_vsClipPlanes;
 
     Rc<DxvkBuffer>                  m_vsFixedFunction;
+    Rc<DxvkBuffer>                  m_vsVertexBlend;
     Rc<DxvkBuffer>                  m_psFixedFunction;
     Rc<DxvkBuffer>                  m_psShared;
 
@@ -894,6 +969,8 @@ namespace dxvk {
     const D3D9Options               m_d3d9Options;
     const DxsoOptions               m_dxsoOptions;
 
+    BOOL                            m_isSWVP;
+
     D3DPRESENT_PARAMETERS           m_presentParams;
 
     D3D9Cursor                      m_cursor;
@@ -901,7 +978,8 @@ namespace dxvk {
     Com<D3D9Surface, false>         m_autoDepthStencil;
 
     std::vector<
-      IDirect3DSwapChain9Ex*>       m_swapchains;
+      Com<D3D9SwapChainEx,
+      false>>                       m_swapchains;
 
     std::unordered_map<
       D3D9SamplerKey,
@@ -918,13 +996,29 @@ namespace dxvk {
     uint32_t                        m_instancedData   = 0;
     uint32_t                        m_lastSamplerTypeBitfield = 0;
     uint32_t                        m_samplerTypeBitfield = 0;
+    uint32_t                        m_lastProjectionBitfield = 0;
+    uint32_t                        m_projectionBitfield = 0;
+
+    uint32_t                        m_lastPointMode = 0;
+
+    uint32_t                        m_activeRTs        = 0;
+    uint32_t                        m_activeRTTextures = 0;
+    uint32_t                        m_activeHazards    = 0;
+    uint32_t                        m_alphaSwizzleRTs  = 0;
 
     D3D9ViewportInfo                m_viewportInfo;
 
     std::atomic<int64_t>            m_availableMemory = 0;
+    std::atomic<int32_t>            m_samplerCount = 0;
 
     bool                            m_amdATOC         = false;
     bool                            m_nvATOC          = false;
+    bool                            m_ffZTest         = false;
+
+    D3D9ConstantLayout              m_vsLayout;
+    D3D9ConstantLayout              m_psLayout;
+
+    void DetermineConstantLayouts(bool canSWVP);
 
     D3D9UPBufferSlice AllocUpBuffer(VkDeviceSize size);
 
@@ -938,27 +1032,37 @@ namespace dxvk {
       const DWORD*                pShaderBytecode,
       const DxsoModuleInfo*       pModuleInfo);
 
-    template<typename T>
-    static const D3D9CommonShader* GetCommonShader(T* pShader) {
-      return pShader != nullptr ? pShader->GetCommonShader() : nullptr;
-    }
+    // So we don't do OOB.
+    template <DxsoProgramType  ProgramType,
+              D3D9ConstantType ConstantType>
+    inline static constexpr uint32_t DetermineSoftwareRegCount() {
+      constexpr bool isVS = ProgramType == DxsoProgramType::VertexShader;
 
-    inline static constexpr uint32_t DetermineRegCount(
-            DxsoProgramType  ProgramType,
-            D3D9ConstantType ConstantType,
-            bool             Software) {
       switch (ConstantType) {
         default:
-        case D3D9ConstantType::Float:
-          if (Software)
-            return 8192;
-
-          return ProgramType == DxsoProgramType::VertexShader
-               ? caps::MaxFloatConstantsVS
-               : caps::MaxFloatConstantsPS;
-        case D3D9ConstantType::Int:    return Software ? 256  : 16;
-        case D3D9ConstantType::Bool:   return Software ? 256 : 16;
+        case D3D9ConstantType::Float:  return isVS ? caps::MaxFloatConstantsSoftware : caps::MaxFloatConstantsPS;
+        case D3D9ConstantType::Int:    return isVS ? caps::MaxOtherConstantsSoftware : caps::MaxOtherConstants;
+        case D3D9ConstantType::Bool:   return isVS ? caps::MaxOtherConstantsSoftware : caps::MaxOtherConstants;
       }
+    }
+
+    // So we don't copy more than we need.
+    template <DxsoProgramType  ProgramType,
+              D3D9ConstantType ConstantType>
+    inline uint32_t DetermineHardwareRegCount() const {
+      const auto& layout = ProgramType == DxsoProgramType::VertexShader
+        ? m_vsLayout : m_psLayout;
+
+      switch (ConstantType) {
+        default:
+        case D3D9ConstantType::Float:  return layout.floatCount;
+        case D3D9ConstantType::Int:    return layout.intCount;
+        case D3D9ConstantType::Bool:   return layout.boolCount;
+      }
+    }
+
+    inline uint32_t GetFrameLatency() {
+      return m_frameLatency;
     }
 
     template <
@@ -979,8 +1083,8 @@ namespace dxvk {
             T*   pConstantData,
             UINT Count) {
       auto GetHelper = [&] (const auto& set) {
-        constexpr uint32_t regCountHardware = DetermineRegCount(ProgramType, ConstantType, false);
-        constexpr uint32_t regCountSoftware = DetermineRegCount(ProgramType, ConstantType, true);
+        const     uint32_t regCountHardware = DetermineHardwareRegCount<ProgramType, ConstantType>();
+        constexpr uint32_t regCountSoftware = DetermineSoftwareRegCount<ProgramType, ConstantType>();
 
         if (StartRegister + Count > regCountSoftware)
           return D3DERR_INVALIDCALL;
@@ -997,25 +1101,26 @@ namespace dxvk {
           return D3DERR_INVALIDCALL;
 
         if constexpr (ConstantType == D3D9ConstantType::Float) {
-          auto begin = set.fConsts.begin() + StartRegister;
-          auto end = begin + Count;
+          auto begin = &set.fConsts[StartRegister];
+          auto end = &begin[Count];
 
           std::copy(begin, end, reinterpret_cast<Vector4*>(pConstantData));
         }
         else if constexpr (ConstantType == D3D9ConstantType::Int) {
-          auto begin = set.iConsts.begin() + StartRegister;
-          auto end = begin + Count;
+          auto begin = &set.iConsts[StartRegister];
+          auto end = &begin[Count];
 
           std::copy(begin, end, reinterpret_cast<Vector4i*>(pConstantData));
         }
         else {
-          const uint32_t& bitfield = set.boolBitfield;
-
           for (uint32_t i = 0; i < Count; i++) {
-            const uint32_t idx = StartRegister + i;
-            const uint32_t idxBit = 1u << idx;
+            const uint32_t constantIdx = StartRegister + i;
+            const uint32_t arrayIdx    = constantIdx / 32;
+            const uint32_t bitIdx      = constantIdx % 32;
 
-            bool constValue = bitfield & idxBit;
+            const uint32_t bit         = (1u << bitIdx);
+
+            bool constValue = set.bConsts[arrayIdx] & bit;
             pConstantData[i] = constValue ? TRUE : FALSE;
           }
         }
@@ -1041,6 +1146,8 @@ namespace dxvk {
     bool UseProgrammablePS();
 
     void UpdateSamplerSpecConsant(uint32_t value);
+
+    void UpdateProjectionSpecConstant(uint32_t value);
 
   };
 

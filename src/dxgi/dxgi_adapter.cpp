@@ -10,13 +10,57 @@
 #include "dxgi_options.h"
 #include "dxgi_output.h"
 
+#include "../util/util_luid.h"
+
 namespace dxvk {
+
+  DxgiVkAdapter::DxgiVkAdapter(DxgiAdapter* pAdapter)
+  : m_adapter(pAdapter) {
+
+  }
+
+
+  ULONG STDMETHODCALLTYPE DxgiVkAdapter::AddRef() {
+    return m_adapter->AddRef();
+  }
+  
+
+  ULONG STDMETHODCALLTYPE DxgiVkAdapter::Release() {
+    return m_adapter->Release();
+  }
+
+  
+  HRESULT STDMETHODCALLTYPE DxgiVkAdapter::QueryInterface(
+          REFIID                    riid,
+          void**                    ppvObject) {
+    return m_adapter->QueryInterface(riid, ppvObject);
+  }
+
+  
+  void STDMETHODCALLTYPE DxgiVkAdapter::GetVulkanHandles(
+          VkInstance*               pInstance,
+          VkPhysicalDevice*         pPhysDev) {
+    auto adapter  = m_adapter->GetDXVKAdapter();
+    auto instance = m_adapter->GetDXVKInstance();
+
+    if (pInstance)
+      *pInstance = instance->handle();
+    
+    if (pPhysDev)
+      *pPhysDev = adapter->handle();
+  }
+
+
+
 
   DxgiAdapter::DxgiAdapter(
           DxgiFactory*      factory,
-    const Rc<DxvkAdapter>&  adapter)
+    const Rc<DxvkAdapter>&  adapter,
+          UINT              index)
   : m_factory (factory),
-    m_adapter (adapter) {
+    m_adapter (adapter),
+    m_interop (this),
+    m_index   (index) {
     
   }
   
@@ -38,8 +82,13 @@ namespace dxvk {
      || riid == __uuidof(IDXGIAdapter1)
      || riid == __uuidof(IDXGIAdapter2)
      || riid == __uuidof(IDXGIAdapter3)
-     || riid == __uuidof(IDXGIVkAdapter)) {
+     || riid == __uuidof(IDXGIDXVKAdapter)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IDXGIVkInteropAdapter)) {
+      *ppvObject = ref(&m_interop);
       return S_OK;
     }
     
@@ -57,20 +106,24 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiAdapter::CheckInterfaceSupport(
           REFGUID                   InterfaceName,
           LARGE_INTEGER*            pUMDVersion) {
-    const DxgiOptions* options = m_factory->GetOptions();
+    HRESULT hr = DXGI_ERROR_UNSUPPORTED;
 
-    if (pUMDVersion != nullptr)
-      *pUMDVersion = LARGE_INTEGER();
-    
-    if (options->d3d10Enable) {
-      if (InterfaceName == __uuidof(ID3D10Device)
-       || InterfaceName == __uuidof(ID3D10Device1))
-        return S_OK;
+    if (InterfaceName == __uuidof(IDXGIDevice)
+     || InterfaceName == __uuidof(ID3D10Device)
+     || InterfaceName == __uuidof(ID3D10Device1))
+      hr = S_OK;
+
+    // We can't really reconstruct the version numbers
+    // returned by Windows drivers from Vulkan data
+    if (SUCCEEDED(hr) && pUMDVersion)
+      pUMDVersion->QuadPart = ~0ull;
+
+    if (FAILED(hr)) {
+      Logger::err("DXGI: CheckInterfaceSupport: Unsupported interface");
+      Logger::err(str::format(InterfaceName));
     }
-    
-    Logger::err("DXGI: CheckInterfaceSupport: Unsupported interface");
-    Logger::err(str::format(InterfaceName));
-    return DXGI_ERROR_UNSUPPORTED;
+
+    return hr;
   }
   
   
@@ -80,7 +133,7 @@ namespace dxvk {
     InitReturnPtr(ppOutput);
     
     if (ppOutput == nullptr)
-      return DXGI_ERROR_INVALID_CALL;
+      return E_INVALIDARG;
     
     if (Output > 0) {
       *ppOutput = nullptr;
@@ -96,7 +149,7 @@ namespace dxvk {
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc) {
     if (pDesc == nullptr)
-      return DXGI_ERROR_INVALID_CALL;
+      return E_INVALIDARG;
 
     DXGI_ADAPTER_DESC2 desc;
     HRESULT hr = GetDesc2(&desc);
@@ -120,7 +173,7 @@ namespace dxvk {
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::GetDesc1(DXGI_ADAPTER_DESC1* pDesc) {
     if (pDesc == nullptr)
-      return DXGI_ERROR_INVALID_CALL;
+      return E_INVALIDARG;
 
     DXGI_ADAPTER_DESC2 desc;
     HRESULT hr = GetDesc2(&desc);
@@ -145,7 +198,7 @@ namespace dxvk {
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::GetDesc2(DXGI_ADAPTER_DESC2* pDesc) {
     if (pDesc == nullptr)
-      return DXGI_ERROR_INVALID_CALL;
+      return E_INVALIDARG;
     
     const DxgiOptions* options = m_factory->GetOptions();
     
@@ -170,8 +223,7 @@ namespace dxvk {
     
     // Convert device name
     std::memset(pDesc->Description, 0, sizeof(pDesc->Description));
-    ::MultiByteToWideChar(CP_UTF8, 0, deviceProp.deviceName, -1,
-        pDesc->Description, sizeof(pDesc->Description) / sizeof(*pDesc->Description));
+    str::tows(deviceProp.deviceName, pDesc->Description);
     
     // Get amount of video memory
     // based on the Vulkan heaps
@@ -218,6 +270,9 @@ namespace dxvk {
 
     if (deviceId.deviceLUIDValid)
       std::memcpy(&pDesc->AdapterLuid, deviceId.deviceLUID, VK_LUID_SIZE);
+    else
+      pDesc->AdapterLuid = GetAdapterLUID(m_index);
+
     return S_OK;
   }
   
@@ -227,11 +282,11 @@ namespace dxvk {
           DXGI_MEMORY_SEGMENT_GROUP     MemorySegmentGroup,
           DXGI_QUERY_VIDEO_MEMORY_INFO* pVideoMemoryInfo) {
     if (NodeIndex > 0 || !pVideoMemoryInfo)
-      return DXGI_ERROR_INVALID_CALL;
+      return E_INVALIDARG;
     
     if (MemorySegmentGroup != DXGI_MEMORY_SEGMENT_GROUP_LOCAL
      && MemorySegmentGroup != DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL)
-      return DXGI_ERROR_INVALID_CALL;
+      return E_INVALIDARG;
     
     DxvkAdapterMemoryInfo memInfo = m_adapter->getMemoryHeapInfo();
 
@@ -313,6 +368,11 @@ namespace dxvk {
 
   Rc<DxvkAdapter> STDMETHODCALLTYPE DxgiAdapter::GetDXVKAdapter() {
     return m_adapter;
+  }
+
+
+  Rc<DxvkInstance> STDMETHODCALLTYPE DxgiAdapter::GetDXVKInstance() {
+    return m_factory->GetDXVKInstance();
   }
   
 }

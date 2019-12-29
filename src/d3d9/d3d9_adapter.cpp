@@ -6,6 +6,8 @@
 #include "d3d9_util.h"
 
 #include "../util/util_bit.h"
+#include "../util/util_luid.h"
+#include "../util/util_ratio.h"
 
 #include <cfloat>
 
@@ -35,7 +37,7 @@ namespace dxvk {
     , m_adapter         (Adapter)
     , m_ordinal         (Ordinal)
     , m_modeCacheFormat (D3D9Format::Unknown)
-    , m_d3d9Formats     (Adapter) {
+    , m_d3d9Formats     (Adapter, m_parent->GetOptions()) {
     m_adapter->logAdapterInfo();
   }
 
@@ -60,11 +62,12 @@ namespace dxvk {
 
     GUID guid          = bit::cast<GUID>(m_adapter->devicePropertiesExt().coreDeviceId.deviceUUID);
 
-    uint32_t vendorId  = options.customVendorId == -1 ? props.vendorID : uint32_t(options.customVendorId);
-    uint32_t deviceId  = options.customDeviceId == -1 ? props.deviceID : uint32_t(options.customDeviceId);
+    uint32_t vendorId  = options.customVendorId == -1     ? props.vendorID   : uint32_t(options.customVendorId);
+    uint32_t deviceId  = options.customDeviceId == -1     ? props.deviceID   : uint32_t(options.customDeviceId);
+    const char*  desc  = options.customDeviceDesc.empty() ? props.deviceName : options.customDeviceDesc.c_str();
     const char* driver = GetDriverDLL(DxvkGpuVendor(vendorId));
 
-    std::strncpy(pIdentifier->Description, props.deviceName,  countof(pIdentifier->Description));
+    std::strncpy(pIdentifier->Description, desc,              countof(pIdentifier->Description));
     std::strncpy(pIdentifier->DeviceName,  monInfo.szDevice,  countof(pIdentifier->DeviceName)); // The GDI device name. Not the actual device name.
     std::strncpy(pIdentifier->Driver,      driver,            countof(pIdentifier->Driver));     // This is the driver's dll.
 
@@ -74,7 +77,7 @@ namespace dxvk {
     pIdentifier->Revision               = 0;
     pIdentifier->SubSysId               = 0;
     pIdentifier->WHQLLevel              = m_parent->IsExtended() ? 1 : 0; // This doesn't check with the driver on Direct3D9Ex and is always 1.
-    pIdentifier->DriverVersion.QuadPart = props.driverVersion;
+    pIdentifier->DriverVersion.QuadPart = INT64_MAX;
 
     return D3D_OK;
   }
@@ -119,6 +122,9 @@ namespace dxvk {
     if (CheckFormat == D3D9Format::INST)
       return D3D_OK;
 
+    if (rt && CheckFormat == D3D9Format::A8 && m_parent->GetOptions().disableA8RT)
+      return D3DERR_NOTAVAILABLE;
+
     if (ds && !IsDepthFormat(CheckFormat))
       return D3DERR_NOTAVAILABLE;
 
@@ -147,10 +153,6 @@ namespace dxvk {
 
     if (RType == D3DRTYPE_VERTEXBUFFER || RType == D3DRTYPE_INDEXBUFFER)
       return D3D_OK;
-
-    auto& options = m_parent->GetOptions();
-    if ((CheckFormat == D3D9Format::DF16 || CheckFormat == D3D9Format::DF24) && !options.supportDFFormats)
-      return D3DERR_NOTAVAILABLE;
 
     // Let's actually ask Vulkan now that we got some quirks out the way!
 
@@ -681,7 +683,12 @@ namespace dxvk {
     if (pLUID == nullptr)
       return D3DERR_INVALIDCALL;
 
-    *pLUID = bit::cast<LUID>(m_adapter->devicePropertiesExt().coreDeviceId.deviceLUID);
+    auto& deviceId = m_adapter->devicePropertiesExt().coreDeviceId;
+
+    if (deviceId.deviceLUIDValid)
+      *pLUID = bit::cast<LUID>(deviceId.deviceLUID);
+    else
+      *pLUID = dxvk::GetAdapterLUID(m_ordinal);
 
     return D3D_OK;
   }
@@ -746,12 +753,16 @@ namespace dxvk {
     if (!IsSupportedAdapterFormat(Format) || !IsSupportedDisplayFormat(Format, false))
       return;
 
+    auto& options = m_parent->GetOptions();
+
     // Walk over all modes that the display supports and
     // return those that match the requested format etc.
     DEVMODEW devMode = { };
     devMode.dmSize = sizeof(DEVMODEW);
 
     uint32_t modeIndex = 0;
+
+    const auto forcedRatio = Ratio<DWORD>(options.forceAspectRatio);
 
     while (::EnumDisplaySettingsW(monInfo.szDevice, modeIndex++, &devMode)) {
       // Skip interlaced modes altogether
@@ -760,6 +771,9 @@ namespace dxvk {
 
       // Skip modes with incompatible formats
       if (devMode.dmBitsPerPel != GetMonitorFormatBpp(Format))
+        continue;
+
+      if (!forcedRatio.undefined() && Ratio<DWORD>(devMode.dmPelsWidth, devMode.dmPelsHeight) != forcedRatio)
         continue;
 
       D3DDISPLAYMODEEX mode;

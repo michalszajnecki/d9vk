@@ -1,4 +1,8 @@
 dxvk_shaders = files([
+  'shaders/dxvk_blit_frag_1d.frag',
+  'shaders/dxvk_blit_frag_2d.frag',
+  'shaders/dxvk_blit_frag_3d.frag',
+
   'shaders/dxvk_clear_buffer_u.comp',
   'shaders/dxvk_clear_buffer_f.comp',
   'shaders/dxvk_clear_image1d_u.comp',
@@ -25,10 +29,6 @@ dxvk_shaders = files([
   'shaders/dxvk_fullscreen_geom.geom',
   'shaders/dxvk_fullscreen_vert.vert',
   'shaders/dxvk_fullscreen_layer_vert.vert',
-
-  'shaders/dxvk_mipgen_frag_1d.frag',
-  'shaders/dxvk_mipgen_frag_2d.frag',
-  'shaders/dxvk_mipgen_frag_3d.frag',
 
   'shaders/dxvk_pack_d24s8.comp',
   'shaders/dxvk_pack_d32s8.comp',
@@ -74,6 +74,7 @@ dxvk_src = files([
   'dxvk_lifetime.cpp',
   'dxvk_main.cpp',
   'dxvk_memory.cpp',
+  'dxvk_meta_blit.cpp',
   'dxvk_meta_clear.cpp',
   'dxvk_meta_copy.cpp',
   'dxvk_meta_mipgen.cpp',
@@ -97,14 +98,13 @@ dxvk_src = files([
   'dxvk_stats.cpp',
   'dxvk_unbound.cpp',
   'dxvk_util.cpp',
+
+  'platform/dxvk_win32_exts.cpp',
   
   'hud/dxvk_hud.cpp',
-  'hud/dxvk_hud_config.cpp',
-  'hud/dxvk_hud_devinfo.cpp',
   'hud/dxvk_hud_font.cpp',
-  'hud/dxvk_hud_fps.cpp',
+  'hud/dxvk_hud_item.cpp',
   'hud/dxvk_hud_renderer.cpp',
-  'hud/dxvk_hud_stats.cpp',
 ])
 
 thread_dep = dependency('threads')

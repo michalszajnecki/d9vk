@@ -3,6 +3,7 @@
 #include "../dxvk/dxvk_device.h"
 
 #include "d3d9_device_child.h"
+#include "d3d9_format.h"
 
 namespace dxvk {
 
@@ -56,7 +57,7 @@ namespace dxvk {
       if (IsDegenerate())
         return false;
 
-      return range.max > min && range.min < max;;
+      return range.max > min && range.min < max;
     }
 
     void Clear() { min = 0; max = 0; }
@@ -85,7 +86,7 @@ namespace dxvk {
             D3D9_BUFFER_DESC* pDesc);
 
     D3D9_COMMON_BUFFER_MAP_MODE GetMapMode() const {
-      return m_desc.Usage & D3DUSAGE_DYNAMIC
+      return (m_desc.Pool == D3DPOOL_DEFAULT && (m_desc.Usage & (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY)))
         ? D3D9_COMMON_BUFFER_MAP_MODE_DIRECT
         : D3D9_COMMON_BUFFER_MAP_MODE_BUFFER;
     }
@@ -128,9 +129,9 @@ namespace dxvk {
       return m_sliceHandle;
     }
 
-    DWORD GetMapFlags(DWORD Flags) { return m_mapFlags; }
+    DWORD GetMapFlags() const      { return m_mapFlags; }
 
-    DWORD SetMapFlags(DWORD Flags) { return std::exchange(m_mapFlags, Flags); }
+    void SetMapFlags(DWORD Flags) { m_mapFlags = Flags; }
 
     const D3D9_BUFFER_DESC* Desc() const {
       return &m_desc;
@@ -141,7 +142,8 @@ namespace dxvk {
     D3D9Range& LockRange()  { return m_lockRange; }
     D3D9Range& DirtyRange() { return m_dirtyRange; }
 
-    bool SetReadLocked(bool state) { return std::exchange(m_readLocked, state); }
+    bool GetReadLocked() const     { return m_readLocked; }
+    void SetReadLocked(bool state) { m_readLocked = state; }
 
     uint32_t IncrementLockCount() { return ++m_lockCount; }
     uint32_t DecrementLockCount() {
@@ -149,6 +151,16 @@ namespace dxvk {
         return 0;
 
       return --m_lockCount;
+    }
+
+    void MarkUploaded()      { m_needsUpload = false; }
+    void MarkNeedsUpload()   { m_needsUpload = true; }
+    bool NeedsUpload() const { return m_needsUpload; }
+
+    bool MarkLocked() {
+      bool locked = m_readLocked;
+      m_readLocked = true;
+      return locked;
     }
 
   private:
@@ -182,6 +194,8 @@ namespace dxvk {
     D3D9Range                   m_dirtyRange;
 
     uint32_t                    m_lockCount = 0;
+
+    bool                        m_needsUpload = false;
 
   };
 

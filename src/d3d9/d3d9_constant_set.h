@@ -2,6 +2,8 @@
 
 #include "d3d9_caps.h"
 
+#include "../dxvk/dxvk_buffer.h"
+
 #include "../dxso/dxso_isgn.h"
 
 #include "../util/util_math.h"
@@ -18,16 +20,22 @@ namespace dxvk {
   };
 
   // We make an assumption later based on the packing of this struct for copying.
-  struct D3D9ShaderConstantsVS {
-    std::array<Vector4,  caps::MaxFloatConstantsVS> fConsts;
-    std::array<Vector4i, caps::MaxOtherConstants>   iConsts;
-    uint32_t boolBitfield = 0;
+  struct D3D9ShaderConstantsVSSoftware {
+    Vector4  fConsts[caps::MaxFloatConstantsSoftware];
+    Vector4i iConsts[caps::MaxOtherConstantsSoftware];
+    uint32_t bConsts[caps::MaxOtherConstantsSoftware / 32];
+  };
+
+  struct D3D9ShaderConstantsVSHardware {
+    Vector4  fConsts[caps::MaxFloatConstantsVS];
+    Vector4i iConsts[caps::MaxOtherConstants];
+    uint32_t bConsts[1];
   };
 
   struct D3D9ShaderConstantsPS {
-    std::array<Vector4,  caps::MaxFloatConstantsPS> fConsts;
-    std::array<Vector4i, caps::MaxOtherConstants>   iConsts;
-    uint32_t boolBitfield = 0;
+    Vector4  fConsts[caps::MaxFloatConstantsPS];
+    Vector4i iConsts[caps::MaxOtherConstants];
+    uint32_t bConsts[1];
   };
 
   struct D3D9ConstantSets {

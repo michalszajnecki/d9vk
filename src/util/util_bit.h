@@ -17,6 +17,9 @@
 #include <cstring>
 #include <type_traits>
 
+#include <cstring>
+#include <type_traits>
+
 namespace dxvk::bit {
 
   template<typename T, typename J>
@@ -75,9 +78,9 @@ namespace dxvk::bit {
   }
 
   inline uint32_t lzcnt(uint32_t n) {
-    #if defined(_MSC_VER) || defined(__LZCNT__)
+    #if (defined(_MSC_VER) && !defined(__clang__)) || defined(__LZCNT__)
     return _lzcnt_u32(n);
-    #elif defined(__GNUC__)
+    #elif defined(__GNUC__) || defined(__clang__)
     return n != 0 ? __builtin_clz(n) : 32;
     #else
     uint32_t r = 0;
@@ -110,6 +113,58 @@ namespace dxvk::bit {
       dst = (src >> shift) & ((T(1) << count) - 1);
     shift += count;
     return shift > Bits ? shift - Bits : 0;
+  }
+
+  /**
+   * \brief Compares two aligned structs bit by bit
+   *
+   * \param [in] a First struct
+   * \param [in] b Second struct
+   * \returns \c true if the structs are equal
+   */
+  template<typename T>
+  bool bcmpeq(const T* a, const T* b) {
+    static_assert(alignof(T) >= 16);
+    #if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
+    auto ai = reinterpret_cast<const __m128i*>(a);
+    auto bi = reinterpret_cast<const __m128i*>(b);
+
+    size_t i = 0;
+
+    #if defined(__clang__)
+    #pragma nounroll
+    #elif defined(__GNUC__)
+    #pragma GCC unroll 0
+    #endif
+
+    for ( ; i < 2 * (sizeof(T) / 32); i += 2) {
+      __m128i eq0 = _mm_cmpeq_epi8(
+        _mm_load_si128(ai + i),
+        _mm_load_si128(bi + i));
+      __m128i eq1 = _mm_cmpeq_epi8(
+        _mm_load_si128(ai + i + 1),
+        _mm_load_si128(bi + i + 1));
+      __m128i eq = _mm_and_si128(eq0, eq1);
+
+      int mask = _mm_movemask_epi8(eq);
+      if (mask != 0xFFFF)
+        return false;
+    }
+
+    for ( ; i < sizeof(T) / 16; i++) {
+      __m128i eq = _mm_cmpeq_epi8(
+        _mm_load_si128(ai + i),
+        _mm_load_si128(bi + i));
+
+      int mask = _mm_movemask_epi8(eq);
+      if (mask != 0xFFFF)
+        return false;
+    }
+
+    return true;
+    #else
+    return !std::memcmp(a, b, sizeof(T));
+    #endif
   }
   
 }

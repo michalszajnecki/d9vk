@@ -4,11 +4,11 @@
 namespace dxvk {
   
   D3D11Query::D3D11Query(
-          D3D11Device*      device,
-    const D3D11_QUERY_DESC& desc)
+          D3D11Device*       device,
+    const D3D11_QUERY_DESC1& desc)
   : m_device(device), m_desc(desc),
     m_state(D3D11_VK_QUERY_INITIAL),
-    m_d3d10(this, device->GetD3D10Interface()) {
+    m_d3d10(this) {
     Rc<DxvkDevice> dxvkDevice = m_device->GetDXVKDevice();
 
     switch (m_desc.Query) {
@@ -80,8 +80,7 @@ namespace dxvk {
   
   
   D3D11Query::~D3D11Query() {
-    if (m_predicate.defined())
-      m_device->FreePredicateSlice(m_predicate);
+
   }
   
     
@@ -94,7 +93,8 @@ namespace dxvk {
     if (riid == __uuidof(IUnknown)
      || riid == __uuidof(ID3D11DeviceChild)
      || riid == __uuidof(ID3D11Asynchronous)
-     || riid == __uuidof(ID3D11Query)) {
+     || riid == __uuidof(ID3D11Query)
+     || riid == __uuidof(ID3D11Query1)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -109,7 +109,7 @@ namespace dxvk {
     
     if (m_desc.Query == D3D11_QUERY_OCCLUSION_PREDICATE) {
       if (riid == __uuidof(ID3D11Predicate)) {
-        *ppvObject = ref(this);
+        *ppvObject = AsPredicate(ref(this));
         return S_OK;
       }
 
@@ -170,15 +170,18 @@ namespace dxvk {
   }
   
     
-  void STDMETHODCALLTYPE D3D11Query::GetDesc(D3D11_QUERY_DESC *pDesc) {
+  void STDMETHODCALLTYPE D3D11Query::GetDesc(D3D11_QUERY_DESC* pDesc) {
+    pDesc->Query     = m_desc.Query;
+    pDesc->MiscFlags = m_desc.MiscFlags;
+  }
+  
+  
+  void STDMETHODCALLTYPE D3D11Query::GetDesc1(D3D11_QUERY_DESC1* pDesc) {
     *pDesc = m_desc;
   }
   
   
   void D3D11Query::Begin(DxvkContext* ctx) {
-    if (unlikely(m_state == D3D11_VK_QUERY_BEGUN))
-      return;
-    
     switch (m_desc.Query) {
       case D3D11_QUERY_EVENT:
       case D3D11_QUERY_TIMESTAMP:
@@ -191,8 +194,6 @@ namespace dxvk {
       default:
         ctx->beginQuery(m_query[0]);
     }
-
-    m_state = D3D11_VK_QUERY_BEGUN;
   }
   
   
@@ -208,22 +209,43 @@ namespace dxvk {
         break;
       
       default:
-        if (unlikely(m_state != D3D11_VK_QUERY_BEGUN))
-          return;
-        
         ctx->endQuery(m_query[0]);
     }
 
-    if (unlikely(m_predicate.defined()))
-      ctx->writePredicate(m_predicate, m_query[0]);
-    
-    m_state = D3D11_VK_QUERY_ENDED;
+    if (unlikely(m_predicate != nullptr))
+      ctx->writePredicate(DxvkBufferSlice(m_predicate), m_query[0]);
+
+    m_resetCtr.fetch_sub(1, std::memory_order_release);
   }
   
   
+  bool STDMETHODCALLTYPE D3D11Query::DoBegin() {
+    if (!IsScoped() || m_state == D3D11_VK_QUERY_BEGUN)
+      return false;
+
+    m_state = D3D11_VK_QUERY_BEGUN;
+    return true;
+  }
+
+  bool STDMETHODCALLTYPE D3D11Query::DoEnd() {
+    if (IsScoped() && m_state != D3D11_VK_QUERY_BEGUN)
+      return false;
+
+    m_state = D3D11_VK_QUERY_ENDED;
+    m_resetCtr.fetch_add(1, std::memory_order_acquire);
+    return true;
+  }
+
+
   HRESULT STDMETHODCALLTYPE D3D11Query::GetData(
           void*                             pData,
           UINT                              GetDataFlags) {
+    if (m_state != D3D11_VK_QUERY_ENDED)
+      return DXGI_ERROR_INVALID_CALL;
+
+    if (m_resetCtr != 0u)
+      return S_FALSE;
+
     if (m_desc.Query == D3D11_QUERY_EVENT) {
       DxvkGpuEventStatus status = m_event[0]->test();
 
@@ -321,15 +343,12 @@ namespace dxvk {
     if (unlikely(m_desc.Query != D3D11_QUERY_OCCLUSION_PREDICATE))
       return DxvkBufferSlice();
 
-    if (unlikely(m_state != D3D11_VK_QUERY_ENDED))
-      return DxvkBufferSlice();
-
-    if (unlikely(!m_predicate.defined())) {
-      m_predicate = m_device->AllocPredicateSlice();
-      ctx->writePredicate(m_predicate, m_query[0]);
+    if (unlikely(m_predicate != nullptr)) {
+      m_predicate = CreatePredicateBuffer();
+      ctx->writePredicate(DxvkBufferSlice(m_predicate), m_query[0]);
     }
 
-    return m_predicate;
+    return DxvkBufferSlice(m_predicate);
   }
 
 
@@ -339,6 +358,30 @@ namespace dxvk {
 
     VkPhysicalDeviceLimits limits = adapter->deviceProperties().limits;
     return uint64_t(1'000'000'000.0f / limits.timestampPeriod);
+  }
+
+
+  HRESULT D3D11Query::ValidateDesc(const D3D11_QUERY_DESC1* pDesc) {
+    if (pDesc->Query       >= D3D11_QUERY_PIPELINE_STATISTICS
+     && pDesc->ContextType >  D3D11_CONTEXT_TYPE_3D)
+      return E_INVALIDARG;
+    
+    return S_OK;
+  }
+
+
+  Rc<DxvkBuffer> D3D11Query::CreatePredicateBuffer() {
+    Rc<DxvkDevice> device = m_device->GetDXVKDevice();
+
+    DxvkBufferCreateInfo info;
+    info.size   = sizeof(uint32_t);
+    info.usage  = VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                | VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT;
+    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT
+                | VK_PIPELINE_STAGE_CONDITIONAL_RENDERING_BIT_EXT;
+    info.access = VK_ACCESS_TRANSFER_WRITE_BIT
+                | VK_ACCESS_CONDITIONAL_RENDERING_READ_BIT_EXT;
+    return device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   }
   
 }

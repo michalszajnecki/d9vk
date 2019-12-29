@@ -1,8 +1,9 @@
 util_src = files([
   'util_env.cpp',
   'util_string.cpp',
-  'util_matrix.cpp',
   'util_gdi.cpp',
+  'util_luid.cpp',
+  'util_matrix.cpp',
   
   'com/com_guid.cpp',
   'com/com_private_data.cpp',

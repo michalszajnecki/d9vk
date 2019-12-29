@@ -1,6 +1,7 @@
 #pragma once
 
 #include "d3d9_include.h"
+#include "d3d9_options.h"
 
 #include "../dxvk/dxvk_adapter.h"
 #include "../dxvk/dxvk_format.h"
@@ -126,6 +127,18 @@ namespace dxvk {
 
   std::ostream& operator << (std::ostream& os, D3D9Format format);
 
+  enum D3D9VideoFormat : uint32_t {
+    D3D9VideoFormat_None = 0,
+    D3D9VideoFormat_YUY2 = 1,
+    D3D9VideoFormat_UYVY,
+    D3D9VideoFormat_Count
+  };
+
+  struct D3D9_VIDEO_FORMAT_INFO {
+    D3D9VideoFormat FormatType     = D3D9VideoFormat_None;
+    VkExtent2D      MacroPixelSize = { 1u, 1u };
+  };
+
   /**
    * \brief Format mapping
    * 
@@ -143,6 +156,9 @@ namespace dxvk {
     VkComponentMapping    Swizzle       = {                     ///< Color component swizzle
       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+    D3D9_VIDEO_FORMAT_INFO VideoFormatInfo = { };
+
+    bool IsValid() { return FormatColor != VK_FORMAT_UNDEFINED; }
   };
 
   D3D9_VK_FORMAT_MAPPING ConvertFormatUnfixed(D3D9Format Format);
@@ -159,7 +175,8 @@ namespace dxvk {
   public:
 
     D3D9VkFormatTable(
-      const Rc<DxvkAdapter>& adapter);
+      const Rc<DxvkAdapter>& adapter,
+      const D3D9Options&     options);
 
     /**
      * \brief Retrieves info for a given D3D9 format
@@ -169,6 +186,15 @@ namespace dxvk {
      * \returns Format info
      */
     D3D9_VK_FORMAT_MAPPING GetFormatMapping(
+      D3D9Format            Format) const;
+
+    /**
+     * \brief Retrieves format info for unsupported
+     * formats.
+     *
+     * \param [in] Format The D3D9 format to look up
+     */
+    DxvkFormatInfo GetUnsupportedFormatInfo(
       D3D9Format            Format) const;
 
   private:
@@ -181,6 +207,9 @@ namespace dxvk {
     bool m_d24s8Support;
     bool m_d16s8Support;
 
+    bool m_dfSupport;
+    bool m_x4r4g4b4Support;
+    bool m_d32supportFinal;
   };
 
 }

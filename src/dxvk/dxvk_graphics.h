@@ -4,6 +4,7 @@
 
 #include "dxvk_bind_mask.h"
 #include "dxvk_constant_state.h"
+#include "dxvk_graphics_state.h"
 #include "dxvk_pipecache.h"
 #include "dxvk_pipelayout.h"
 #include "dxvk_renderpass.h"
@@ -21,8 +22,7 @@ namespace dxvk {
    */
   enum class DxvkGraphicsPipelineFlag {
     HasTransformFeedback,
-    HasFsStorageDescriptors,
-    HasVsStorageDescriptors,
+    HasStorageDescriptors,
   };
 
   using DxvkGraphicsPipelineFlags = Flags<DxvkGraphicsPipelineFlag>;
@@ -37,92 +37,22 @@ namespace dxvk {
     Rc<DxvkShader> tes;
     Rc<DxvkShader> gs;
     Rc<DxvkShader> fs;
-  };
 
-
-  /**
-   * \brief Graphics pipeline state info
-   * 
-   * Stores all information that is required to create
-   * a graphics pipeline, except the shader objects
-   * themselves. Also used to identify pipelines using
-   * the current pipeline state vector.
-   */
-  struct DxvkGraphicsPipelineStateInfo {
-    DxvkGraphicsPipelineStateInfo();
-    DxvkGraphicsPipelineStateInfo(
-      const DxvkGraphicsPipelineStateInfo& other);
-    
-    DxvkGraphicsPipelineStateInfo& operator = (
-      const DxvkGraphicsPipelineStateInfo& other);
-    
-    bool operator == (const DxvkGraphicsPipelineStateInfo& other) const;
-    bool operator != (const DxvkGraphicsPipelineStateInfo& other) const;
-
-    bool useDynamicStencilRef() const {
-      return dsEnableStencilTest;
+    bool eq(const DxvkGraphicsPipelineShaders& other) const {
+      return vs == other.vs && tcs == other.tcs
+          && tes == other.tes && gs == other.gs
+          && fs == other.fs;
     }
 
-    bool useDynamicDepthBias() const {
-      return rsDepthBiasEnable;
+    size_t hash() const {
+      DxvkHashState state;
+      state.add(DxvkShader::getHash(vs));
+      state.add(DxvkShader::getHash(tcs));
+      state.add(DxvkShader::getHash(tes));
+      state.add(DxvkShader::getHash(gs));
+      state.add(DxvkShader::getHash(fs));
+      return state;
     }
-
-    bool useDynamicDepthBounds() const {
-      return dsEnableDepthBoundsTest;
-    }
-
-    bool useDynamicBlendConstants() const {
-      bool result = false;
-      
-      for (uint32_t i = 0; i < MaxNumRenderTargets && !result; i++) {
-        result |= omBlendAttachments[i].blendEnable
-         && (util::isBlendConstantBlendFactor(omBlendAttachments[i].srcColorBlendFactor)
-          || util::isBlendConstantBlendFactor(omBlendAttachments[i].dstColorBlendFactor)
-          || util::isBlendConstantBlendFactor(omBlendAttachments[i].srcAlphaBlendFactor)
-          || util::isBlendConstantBlendFactor(omBlendAttachments[i].dstAlphaBlendFactor));
-      }
-
-      return result;
-    }
-    
-    DxvkBindingMask                     bsBindingMask;
-    
-    VkPrimitiveTopology                 iaPrimitiveTopology;
-    VkBool32                            iaPrimitiveRestart;
-    uint32_t                            iaPatchVertexCount;
-    
-    uint32_t                            ilAttributeCount;
-    uint32_t                            ilBindingCount;
-    VkVertexInputAttributeDescription   ilAttributes[DxvkLimits::MaxNumVertexAttributes];
-    VkVertexInputBindingDescription     ilBindings[DxvkLimits::MaxNumVertexBindings];
-    uint32_t                            ilDivisors[DxvkLimits::MaxNumVertexBindings];
-    
-    VkBool32                            rsDepthClipEnable;
-    VkBool32                            rsDepthBiasEnable;
-    VkPolygonMode                       rsPolygonMode;
-    VkCullModeFlags                     rsCullMode;
-    VkFrontFace                         rsFrontFace;
-    uint32_t                            rsViewportCount;
-    VkSampleCountFlags                  rsSampleCount;
-    
-    VkSampleCountFlags                  msSampleCount;
-    uint32_t                            msSampleMask;
-    VkBool32                            msEnableAlphaToCoverage;
-    
-    VkBool32                            dsEnableDepthTest;
-    VkBool32                            dsEnableDepthWrite;
-    VkBool32                            dsEnableDepthBoundsTest;
-    VkBool32                            dsEnableStencilTest;
-    VkCompareOp                         dsDepthCompareOp;
-    VkStencilOpState                    dsStencilOpFront;
-    VkStencilOpState                    dsStencilOpBack;
-    
-    VkBool32                            omEnableLogicOp;
-    VkLogicOp                           omLogicOp;
-    VkPipelineColorBlendAttachmentState omBlendAttachments[MaxNumRenderTargets];
-    VkComponentMapping                  omComponentMapping[MaxNumRenderTargets];
-
-    uint32_t                            scSpecConstants[MaxNumSpecConstants];
   };
   
   
@@ -208,6 +138,14 @@ namespace dxvk {
             DxvkGraphicsPipelineShaders shaders);
 
     ~DxvkGraphicsPipeline();
+
+    /**
+     * \brief Shaders used by the pipeline
+     * \returns Shaders used by the pipeline
+     */
+    const DxvkGraphicsPipelineShaders& shaders() const {
+      return m_shaders;
+    }
     
     /**
      * \brief Returns graphics pipeline flags
@@ -302,8 +240,11 @@ namespace dxvk {
     
     DxvkShaderModule createShaderModule(
       const Rc<DxvkShader>&                shader,
-      const DxvkShaderModuleCreateInfo&    info) const;
+      const DxvkGraphicsPipelineStateInfo& state) const;
     
+    Rc<DxvkShader> getPrevStageShader(
+            VkShaderStageFlagBits          stage) const;
+
     bool validatePipelineState(
       const DxvkGraphicsPipelineStateInfo& state) const;
     
@@ -314,7 +255,7 @@ namespace dxvk {
     void logPipelineState(
             LogLevel                       level,
       const DxvkGraphicsPipelineStateInfo& state) const;
-    
+
   };
   
 }

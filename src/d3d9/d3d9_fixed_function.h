@@ -16,6 +16,8 @@ namespace dxvk {
   class D3D9DeviceEx;
   class SpirvModule;
 
+  struct D3D9Options;
+
   struct D3D9FogContext {
     // General inputs...
     bool     IsPixel;
@@ -25,38 +27,99 @@ namespace dxvk {
     uint32_t vFog;
 
     uint32_t oColor;
+
+    bool     HasFogInput;
+  };
+
+  struct D3D9FixedFunctionOptions {
+    D3D9FixedFunctionOptions(const D3D9Options* options);
+
+    bool invariantPosition;
   };
 
   // Returns new oFog if VS
   // Returns new oColor if PS
   uint32_t DoFixedFunctionFog(SpirvModule& spvModule, const D3D9FogContext& fogCtx);
 
+  // Returns a render state block
+  uint32_t SetupRenderStateBlock(SpirvModule& spvModule);
+
+  struct D3D9PointSizeInfoVS {
+    uint32_t defaultValue;
+    uint32_t min;
+    uint32_t max;
+  };
+
+  // Default point size and point scale magic!
+  D3D9PointSizeInfoVS GetPointSizeInfoVS(SpirvModule& spvModule, uint32_t vPos, uint32_t vtx, uint32_t perVertPointSize, uint32_t rsBlock);
+
+  struct D3D9PointSizeInfoPS {
+    uint32_t isSprite;
+  };
+
+  D3D9PointSizeInfoPS GetPointSizeInfoPS(SpirvModule& spvModule, uint32_t rsBlock);
+
+  uint32_t GetPointCoord(SpirvModule& spvModule, std::vector<uint32_t>& entryPointInterfaces);
+
+  uint32_t GetSharedConstants(SpirvModule& spvModule);
+
+  constexpr uint32_t TCIOffset = 16;
+  constexpr uint32_t TCIMask   = 0b111 << TCIOffset;
+
+  enum D3D9FF_VertexBlendMode {
+    D3D9FF_VertexBlendMode_Disabled,
+    D3D9FF_VertexBlendMode_Normal,
+    D3D9FF_VertexBlendMode_Tween,
+  };
+
+  struct D3D9FFShaderKeyVSData {
+    union {
+      struct {
+        uint32_t TexcoordIndices : 24;
+
+        uint32_t HasPositionT : 1;
+
+        uint32_t HasColor0 : 1; // Diffuse
+        uint32_t HasColor1 : 1; // Specular
+
+        uint32_t HasPointSize : 1;
+
+        uint32_t UseLighting : 1;
+
+        uint32_t NormalizeNormals : 1;
+        uint32_t LocalViewer : 1;
+        uint32_t RangeFog : 1;
+
+        uint32_t TexcoordFlags : 24;
+
+        uint32_t DiffuseSource : 2;
+        uint32_t AmbientSource : 2;
+        uint32_t SpecularSource : 2;
+        uint32_t EmissiveSource : 2;
+
+        uint32_t TransformFlags : 24;
+
+        uint32_t LightCount : 4;
+
+        uint32_t TexcoordDeclMask : 24;
+        uint32_t HasFog : 1;
+
+        uint32_t VertexBlendMode    : 2;
+        uint32_t VertexBlendIndexed : 1;
+        uint32_t VertexBlendCount   : 3;
+      } Contents;
+
+      uint32_t Primitive[4];
+    };
+  };
+
   struct D3D9FFShaderKeyVS {
     D3D9FFShaderKeyVS() {
       // memcmp safety
-      std::memset(this, 0, sizeof(*this));
+      std::memset(&Data, 0, sizeof(Data));
     }
 
-    bool HasPositionT;
-
-    bool HasColor0; // Diffuse
-    bool HasColor1; // Specular
-
-    bool UseLighting;
-
-    bool NormalizeNormals;
-    bool LocalViewer;
-    bool RangeFog;
-
-    D3DMATERIALCOLORSOURCE DiffuseSource;
-    D3DMATERIALCOLORSOURCE AmbientSource;
-    D3DMATERIALCOLORSOURCE SpecularSource;
-    D3DMATERIALCOLORSOURCE EmissiveSource;
-
-    std::array<uint32_t, caps::TextureStageCount> TexcoordIndices;
-    std::array<uint32_t, caps::TextureStageCount> TransformFlags;
-
-    uint32_t LightCount;
+    D3D9FFShaderKeyVSData Data;
   };
 
   constexpr uint32_t TextureArgCount = 3;
@@ -64,40 +127,45 @@ namespace dxvk {
   struct D3D9FFShaderStage {
     union {
       struct {
-        uint16_t     ColorOp : 5;
-        uint16_t     ColorArg0 : 6;
-        uint16_t     ColorArg1 : 6;
-        uint16_t     ColorArg2 : 6;
+        uint32_t     ColorOp   : 5;
+        uint32_t     ColorArg0 : 6;
+        uint32_t     ColorArg1 : 6;
+        uint32_t     ColorArg2 : 6;
 
-        uint16_t     AlphaOp : 5;
-        uint16_t     AlphaArg0 : 6;
-        uint16_t     AlphaArg1 : 6;
-        uint16_t     AlphaArg2 : 6;
+        uint32_t     AlphaOp   : 5;
+        uint32_t     AlphaArg0 : 6;
+        uint32_t     AlphaArg1 : 6;
+        uint32_t     AlphaArg2 : 6;
 
-        uint16_t     Type : 2;
-        uint16_t     ResultIsTemp : 1;
-        uint16_t     Projected : 1;
-      } data;
+        uint32_t     Type         : 2;
+        uint32_t     ResultIsTemp : 1;
+        uint32_t     Projected    : 1;
 
-      uint64_t uint64[8];
+        uint32_t     ProjectedCount : 3;
+
+        // Included in here, read from Stage 0 for packing reasons
+        // Affects all stages.
+        uint32_t     GlobalSpecularEnable : 1;
+        uint32_t     GlobalFlatShade      : 1;
+      } Contents;
+
+      uint32_t Primitive[2];
     };
   };
 
   struct D3D9FFShaderKeyFS {
     D3D9FFShaderKeyFS() {
       // memcmp safety
-      std::memset(this, 0, sizeof(*this));
+      std::memset(Stages, 0, sizeof(Stages));
 
+      // Normalize this. DISABLE != 0.
       for (uint32_t i = 0; i < caps::TextureStageCount; i++) {
-        auto& stage = Stages[i].data;
-
-        stage.ColorOp = D3DTOP_DISABLE;
-        stage.AlphaOp = D3DTOP_DISABLE;
+        Stages[i].Contents.ColorOp = D3DTOP_DISABLE;
+        Stages[i].Contents.AlphaOp = D3DTOP_DISABLE;
       }
     }
 
     D3D9FFShaderStage Stages[caps::TextureStageCount];
-    bool              SpecularEnable;
   };
 
   struct D3D9FFShaderKeyHash {
@@ -168,5 +236,12 @@ namespace dxvk {
       D3D9FFShaderKeyHash, D3D9FFShaderKeyEq> m_fsModules;
 
   };
+
+
+  inline const DxsoIsgn& GetFixedFunctionIsgn() {
+    extern DxsoIsgn g_ffIsgn;
+
+    return g_ffIsgn;
+  }
 
 }

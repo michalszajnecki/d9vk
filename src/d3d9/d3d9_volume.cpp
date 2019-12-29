@@ -1,15 +1,17 @@
 #include "d3d9_volume.h"
 
+#include "d3d9_device.h"
 #include "d3d9_texture.h"
 
 namespace dxvk {
 
   D3D9Volume::D3D9Volume(
           D3D9DeviceEx*             pDevice,
-    const D3D9_COMMON_TEXTURE_DESC* pDesc)
+    const D3D9_COMMON_TEXTURE_DESC* pDesc,
+          D3D9_VK_FORMAT_MAPPING    Mapping)
     : D3D9VolumeBase(
         pDevice,
-        new D3D9CommonTexture( pDevice, pDesc, D3DRTYPE_VOLUMETEXTURE ),
+        new D3D9CommonTexture( pDevice, pDesc, D3DRTYPE_VOLUMETEXTURE, Mapping ),
         0, 0,
         nullptr) { }
 

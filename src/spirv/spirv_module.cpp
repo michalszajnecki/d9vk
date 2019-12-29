@@ -278,6 +278,23 @@ namespace dxvk {
     
     return this->constComposite(vectorTypeId, args.size(), args.data());
   }
+
+
+  uint32_t SpirvModule::constvec4b32(
+          bool                    x,
+          bool                    y,
+          bool                    z,
+          bool                    w) {
+    std::array<uint32_t, 4> args = {{
+      this->constBool(x), this->constBool(y),
+      this->constBool(z), this->constBool(w),
+    }};
+    
+    uint32_t scalarTypeId = this->defBoolType();
+    uint32_t vectorTypeId = this->defVectorType(scalarTypeId, 4);
+    
+    return this->constComposite(vectorTypeId, args.size(), args.data());
+  }
   
   
   uint32_t SpirvModule::constvec4u32(
@@ -347,16 +364,33 @@ namespace dxvk {
   uint32_t SpirvModule::constfReplicant(
           float                   replicant,
           uint32_t                count) {
-    std::array<uint32_t, 4> args = {{
-      this->constf32(replicant), this->constf32(replicant),
-      this->constf32(replicant), this->constf32(replicant),
-    }};
+    uint32_t value = this->constf32(replicant);
+
+    std::array<uint32_t, 4> args = { value, value, value, value };
 
     // Can't make a scalar composite.
     if (count == 1)
       return args[0];
     
     uint32_t scalarTypeId = this->defFloatType(32);
+    uint32_t vectorTypeId = this->defVectorType(scalarTypeId, count);
+    
+    return this->constComposite(vectorTypeId, count, args.data());
+  }
+
+
+  uint32_t SpirvModule::constbReplicant(
+          bool                    replicant,
+          uint32_t                count) {
+    uint32_t value = this->constBool(replicant);
+
+    std::array<uint32_t, 4> args = { value, value, value, value };
+
+    // Can't make a scalar composite.
+    if (count == 1)
+      return args[0];
+    
+    uint32_t scalarTypeId = this->defBoolType();
     uint32_t vectorTypeId = this->defVectorType(scalarTypeId, count);
     
     return this->constComposite(vectorTypeId, count, args.data());
@@ -377,6 +411,38 @@ namespace dxvk {
           uint32_t                typeId) {
     return this->defConst(spv::OpUndef,
       typeId, 0, nullptr);
+  }
+
+
+  uint32_t SpirvModule::lateConst32(
+          uint32_t                typeId) {
+    uint32_t resultId = this->allocateId();
+    m_lateConsts.insert(resultId);
+
+    m_typeConstDefs.putIns (spv::OpConstant, 4);
+    m_typeConstDefs.putWord(typeId);
+    m_typeConstDefs.putWord(resultId);
+    m_typeConstDefs.putWord(0);
+    return resultId;
+  }
+
+
+  void SpirvModule::setLateConst(
+            uint32_t                constId,
+      const uint32_t*               argIds) {
+    for (auto ins : m_typeConstDefs) {
+      if (ins.opCode() != spv::OpConstant
+       && ins.opCode() != spv::OpConstantComposite)
+        continue;
+      
+      if (ins.arg(2) != constId)
+        continue;
+
+      for (uint32_t i = 3; i < ins.length(); i++)
+        ins.setArg(i, argIds[i - 3]);
+
+      return;
+    }
   }
 
 
@@ -2796,6 +2862,19 @@ namespace dxvk {
   }
   
   
+  uint32_t SpirvModule::opIsNan(
+          uint32_t                resultType,
+          uint32_t                operand) {
+    uint32_t resultId = this->allocateId();
+    
+    m_code.putIns (spv::OpIsNan, 4);
+    m_code.putWord(resultType);
+    m_code.putWord(resultId);
+    m_code.putWord(operand);
+    return resultId;
+  }
+
+
   uint32_t SpirvModule::opFunctionCall(
           uint32_t                resultType,
           uint32_t                functionId,
@@ -3542,8 +3621,13 @@ namespace dxvk {
       for (uint32_t i = 0; i < argCount && match; i++)
         match &= ins.arg(3 + i) == argIds[i];
       
-      if (match)
-        return ins.arg(2);
+      if (!match)
+        continue;
+      
+      uint32_t id = ins.arg(2);
+
+      if (m_lateConsts.find(id) == m_lateConsts.end())
+        return id;
     }
     
     // Constant not yet declared, make a new one

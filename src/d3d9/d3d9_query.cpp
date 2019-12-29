@@ -1,5 +1,7 @@
 #include "d3d9_query.h"
 
+#include "d3d9_device.h"
+
 namespace dxvk {
 
   D3D9Query::D3D9Query(
@@ -11,7 +13,9 @@ namespace dxvk {
     Rc<DxvkDevice> dxvkDevice = m_parent->GetDXVKDevice();
 
     switch (m_queryType) {
-      case D3DQUERYTYPE_VCACHE:
+    case D3DQUERYTYPE_VCACHE:
+        if (!pDevice->GetOptions()->supportVCache)
+          throw DxvkError(str::format("D3D9Query: Unsupported query type ", m_queryType, " (from d3d9.supportVCache)"));
         break;
 
       case D3DQUERYTYPE_EVENT:
@@ -112,6 +116,8 @@ namespace dxvk {
         if (m_state != D3D9_VK_QUERY_BEGUN && QueryBeginnable(m_queryType))
           m_parent->Begin(this);
 
+        m_resetCtr.fetch_add(1, std::memory_order_acquire);
+
         m_parent->End(this);
 
       }
@@ -123,14 +129,27 @@ namespace dxvk {
 
 
   HRESULT STDMETHODCALLTYPE D3D9Query::GetData(void* pData, DWORD dwSize, DWORD dwGetDataFlags) {
+    HRESULT hr = this->GetQueryData(pData, dwSize);
+
+    bool flush = dwGetDataFlags & D3DGETDATA_FLUSH;
+
+    // If we get S_FALSE and it's not from the fact
+    // they didn't call end, do some flushy stuff...
+    if (flush && hr == S_FALSE && m_state != D3D9_VK_QUERY_BEGUN) {
+      this->NotifyStall();
+      m_parent->FlushImplicit(FALSE);
+    }
+
+    return hr;
+  }
+
+
+  HRESULT D3D9Query::GetQueryData(void* pData, DWORD dwSize) {
     // Let the game know that calling end might be a good idea...
     if (m_state == D3D9_VK_QUERY_BEGUN)
       return S_FALSE;
 
     if (unlikely(!pData && dwSize))
-      return D3DERR_INVALIDCALL;
-
-    if (unlikely(dwGetDataFlags != 0 && dwGetDataFlags != D3DGETDATA_FLUSH))
       return D3DERR_INVALIDCALL;
 
     // The game forgot to even issue the query!
@@ -139,9 +158,8 @@ namespace dxvk {
     if (m_state == D3D9_VK_QUERY_INITIAL)
       this->Issue(D3DISSUE_END);
 
-    m_parent->SynchronizeCsThread();
-
-    bool flush = dwGetDataFlags & D3DGETDATA_FLUSH;
+    if (m_resetCtr != 0u)
+      return S_FALSE;
 
     if (m_queryType == D3DQUERYTYPE_EVENT) {
       DxvkGpuEventStatus status = m_event[0]->test();
@@ -152,12 +170,7 @@ namespace dxvk {
       bool signaled = status == DxvkGpuEventStatus::Signaled;
 
       if (pData != nullptr)
-        * static_cast<BOOL*>(pData) = signaled;
-
-      if (!signaled && flush) {
-        this->NotifyStall();
-        m_parent->FlushImplicit(FALSE);
-      }
+        *static_cast<BOOL*>(pData) = signaled;
 
       return signaled ? D3D_OK : S_FALSE;
     }
@@ -168,54 +181,48 @@ namespace dxvk {
         DxvkGpuQueryStatus status = m_query[i]->getData(queryData[i]);
 
         if (status == DxvkGpuQueryStatus::Invalid
-          || status == DxvkGpuQueryStatus::Failed)
+         || status == DxvkGpuQueryStatus::Failed)
           return D3DERR_INVALIDCALL;
 
-        if (status == DxvkGpuQueryStatus::Pending) {
-          if (flush) {
-            this->NotifyStall();
-            m_parent->FlushImplicit(FALSE);
-          }
+        if (status == DxvkGpuQueryStatus::Pending)
           return S_FALSE;
-        }
       }
 
       if (pData == nullptr)
         return D3D_OK;
 
+      auto* data = static_cast<D3D9_QUERY_DATA*>(pData);
+
       switch (m_queryType) {
-        case D3DQUERYTYPE_VCACHE: {
+        case D3DQUERYTYPE_VCACHE:
           // Don't know what the hell any of this means.
           // Nor do I care. This just makes games work.
-          auto* data = static_cast<D3DDEVINFO_VCACHE*>(pData);
-          data->Pattern     = MAKEFOURCC('H', 'C', 'A', 'C');
-          data->OptMethod   = 1;
-          data->CacheSize   = 16;
-          data->MagicNumber = 8;
+          data->VCache.Pattern     = MAKEFOURCC('H', 'C', 'A', 'C');
+          data->VCache.OptMethod   = 1;
+          data->VCache.CacheSize   = 24;
+          data->VCache.MagicNumber = 20;
           return D3D_OK;
-        }
 
         case D3DQUERYTYPE_OCCLUSION:
-          *static_cast<DWORD*>(pData) = DWORD(queryData[0].occlusion.samplesPassed);
+          data->Occlusion = DWORD(queryData[0].occlusion.samplesPassed);
           return D3D_OK;
 
         case D3DQUERYTYPE_TIMESTAMP:
-          *static_cast<UINT64*>(pData) = queryData[0].timestamp.time;
+          data->Timestamp = queryData[0].timestamp.time;
           return D3D_OK;
 
         case D3DQUERYTYPE_TIMESTAMPDISJOINT:
-          *static_cast<BOOL*>(pData) = queryData[0].timestamp.time < queryData[1].timestamp.time;
+          data->TimestampDisjoint = queryData[0].timestamp.time < queryData[1].timestamp.time;
           return D3D_OK;
 
         case D3DQUERYTYPE_TIMESTAMPFREQ:
-          *static_cast<UINT64*>(pData) = GetTimestampQueryFrequency();
+          data->TimestampFreq = GetTimestampQueryFrequency();
           return D3D_OK;
 
-        case D3DQUERYTYPE_VERTEXSTATS: {
-          auto data = static_cast<D3DDEVINFO_D3DVERTEXSTATS*>(pData);
-          data->NumRenderedTriangles      = queryData[0].statistic.iaPrimitives;
-          data->NumExtraClippingTriangles = queryData[0].statistic.clipPrimitives;
-        } return D3D_OK;
+        case D3DQUERYTYPE_VERTEXSTATS:
+          data->VertexStats.NumRenderedTriangles      = queryData[0].statistic.iaPrimitives;
+          data->VertexStats.NumExtraClippingTriangles = queryData[0].statistic.clipPrimitives;
+          return D3D_OK;
 
         default:
           return D3D_OK;
@@ -267,6 +274,8 @@ namespace dxvk {
 
       default: break;
     }
+
+    m_resetCtr.fetch_sub(1, std::memory_order_release);
   }
 
 
@@ -278,10 +287,9 @@ namespace dxvk {
 
 
   bool D3D9Query::QueryEndable(D3DQUERYTYPE QueryType) {
-    return QueryType == D3DQUERYTYPE_TIMESTAMP
-        || QueryType == D3DQUERYTYPE_OCCLUSION
-        || QueryType == D3DQUERYTYPE_EVENT
-        || QueryType == D3DQUERYTYPE_VERTEXSTATS;
+    return QueryBeginnable(QueryType)
+        || QueryType == D3DQUERYTYPE_TIMESTAMP
+        || QueryType == D3DQUERYTYPE_EVENT;
   }
 
 

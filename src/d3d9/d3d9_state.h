@@ -5,6 +5,11 @@
 #include "../dxso/dxso_common.h"
 #include "../util/util_matrix.h"
 
+#include "d3d9_surface.h"
+#include "d3d9_shader.h"
+#include "d3d9_vertex_declaration.h"
+#include "d3d9_buffer.h"
+
 #include <array>
 #include <bitset>
 #include <optional>
@@ -18,19 +23,13 @@ namespace dxvk {
 
   namespace hacks::PointSize {
     static constexpr DWORD AlphaToCoverageDisabled = MAKEFOURCC('A', '2', 'M', '0');
-    static constexpr DWORD AlphaToCoverageEnabled  = MAKEFOURCC('A', '2', 'M', '1');;
+    static constexpr DWORD AlphaToCoverageEnabled  = MAKEFOURCC('A', '2', 'M', '1');
   }
-
-  class D3D9Surface;
-  class D3D9VertexShader;
-  class D3D9PixelShader;
-  class D3D9VertexDecl;
-  class D3D9VertexBuffer;
-  class D3D9IndexBuffer;
   
   struct D3D9ClipPlane {
     float coeff[4];
   };
+
   struct D3D9RenderStateInfo {
     std::array<float, 3> fogColor = { };
     float fogScale   = 0.0f;
@@ -38,6 +37,13 @@ namespace dxvk {
     float fogDensity = 1.0f;
 
     float alphaRef   = 0.0f;
+
+    float pointSize    = 1.0f;
+    float pointSizeMin = 1.0f;
+    float pointSizeMax = 64.0f;
+    float pointScaleA  = 1.0f;
+    float pointScaleB  = 0.0f;
+    float pointScaleC  = 0.0f;
   };
 
   enum class D3D9RenderStateItem {
@@ -46,6 +52,14 @@ namespace dxvk {
     FogEnd,
     FogDensity,
     AlphaRef,
+
+    PointSize,
+    PointSizeMin,
+    PointSizeMax,
+    PointScaleA,
+    PointScaleB,
+    PointScaleC,
+
     Count
   };
 
@@ -108,6 +122,17 @@ namespace dxvk {
     Vector4 GlobalAmbient;
     std::array<D3D9Light, caps::MaxEnabledLights> Lights;
     D3DMATERIAL9 Material;
+    float TweenFactor;
+  };
+
+
+  struct D3D9FixedFunctionVertexBlendDataHW {
+    Matrix4 WorldView[8];
+  };
+
+
+  struct D3D9FixedFunctionVertexBlendDataSW {
+    Matrix4 WorldView[256];
   };
 
 
@@ -115,16 +140,28 @@ namespace dxvk {
     Vector4 textureFactor;
   };
 
+  enum D3D9SharedPSStages {
+    D3D9SharedPSStages_Constant,
+    D3D9SharedPSStages_BumpEnvMat0,
+    D3D9SharedPSStages_BumpEnvMat1,
+    D3D9SharedPSStages_BumpEnvLScale,
+    D3D9SharedPSStages_BumpEnvLOffset,
+    D3D9SharedPSStages_Count,
+  };
+
   struct D3D9SharedPS {
     struct Stage {
+      float Constant[4];
       float BumpEnvMat[2][2];
       float BumpEnvLScale;
       float BumpEnvLOffset;
+      float Padding[2];
     } Stages[8];
   };
   
   struct D3D9VBO {
-    D3D9VertexBuffer* vertexBuffer = nullptr;
+    Com<D3D9VertexBuffer, false> vertexBuffer;
+
     UINT              offset = 0;
     UINT              stride = 0;
   };
@@ -144,22 +181,12 @@ namespace dxvk {
   };
 
   struct D3D9CapturableState {
-    D3D9CapturableState() {
-      for (uint32_t i = 0; i < textures.size(); i++)
-        textures[i] = nullptr;
+    D3D9CapturableState();
 
-      for (uint32_t i = 0; i < clipPlanes.size(); i++)
-        clipPlanes[i] = D3D9ClipPlane();
+    ~D3D9CapturableState();
 
-      for (uint32_t i = 0; i < streamFreq.size(); i++)
-        streamFreq[i] = 1;
-
-      for (uint32_t i = 0; i < enabledLightIndices.size(); i++)
-        enabledLightIndices[i] = UINT32_MAX;
-    }
-
-    D3D9VertexDecl*                                  vertexDecl = nullptr;
-    D3D9IndexBuffer*                                 indices    = nullptr;
+    Com<D3D9VertexDecl,  false>                       vertexDecl;
+    Com<D3D9IndexBuffer, false>                       indices;
 
     std::array<DWORD, RenderStateCount>              renderStates = { 0 };
 
@@ -173,8 +200,8 @@ namespace dxvk {
       IDirect3DBaseTexture9*,
       SamplerCount>                                  textures;
 
-    D3D9VertexShader*                                vertexShader = nullptr;
-    D3D9PixelShader*                                 pixelShader  = nullptr;
+    Com<D3D9VertexShader, false>                     vertexShader;
+    Com<D3D9PixelShader,  false>                     pixelShader;
 
     D3DVIEWPORT9                                     viewport;
     RECT                                             scissorRect;
@@ -187,7 +214,7 @@ namespace dxvk {
       std::array<DWORD, TextureStageStateCount>,
       caps::TextureStageCount>                       textureStages;
 
-    D3D9ShaderConstantsVS                            vsConsts;
+    D3D9ShaderConstantsVSSoftware                    vsConsts;
     D3D9ShaderConstantsPS                            psConsts;
 
     std::array<UINT, caps::MaxStreams>               streamFreq;
@@ -221,26 +248,27 @@ namespace dxvk {
         auto end   = begin + Count;
 
         if (!FloatEmu)
-          std::copy(begin, end, set.fConsts.begin() + StartRegister);
+          std::copy(begin, end, &set.fConsts[StartRegister]);
         else
-          std::transform(begin, end, set.fConsts.begin() + StartRegister, replaceNaN);
+          std::transform(begin, end, &set.fConsts[StartRegister], replaceNaN);
       }
       else if constexpr (ConstantType == D3D9ConstantType::Int) {
         auto begin = reinterpret_cast<const Vector4i*>(pConstantData);
         auto end   = begin + Count;
 
-        std::copy(begin, end, set.iConsts.begin() + StartRegister);
+        std::copy(begin, end, &set.iConsts[StartRegister]);
       }
       else {
-        uint32_t& bitfield = set.boolBitfield;
-
         for (uint32_t i = 0; i < Count; i++) {
-          const uint32_t idx    = StartRegister + i;
-          const uint32_t idxBit = 1u << idx;
+          const uint32_t constantIdx = StartRegister + i;
+          const uint32_t arrayIdx    = constantIdx / 32;
+          const uint32_t bitIdx      = constantIdx % 32;
 
-          bitfield &= ~idxBit;
+          const uint32_t bit = 1u << bitIdx;
+
+          set.bConsts[arrayIdx] &= ~bit;
           if (pConstantData[i])
-            bitfield |= idxBit;
+            set.bConsts[arrayIdx] |= bit;
         }
       }
 
@@ -295,9 +323,9 @@ namespace dxvk {
       caps::TextureStageCount>                          textureStageStates;
 
     struct {
-      std::bitset<caps::MaxFloatConstantsVS>            fConsts;
-      std::bitset<caps::MaxOtherConstants>              iConsts;
-      std::bitset<caps::MaxOtherConstants>              bConsts;
+      std::bitset<caps::MaxFloatConstantsSoftware>      fConsts;
+      std::bitset<caps::MaxOtherConstantsSoftware>      iConsts;
+      std::bitset<caps::MaxOtherConstantsSoftware>      bConsts;
     } vsConsts;
 
     struct {
@@ -308,15 +336,10 @@ namespace dxvk {
   };
 
   struct Direct3DState9 : public D3D9CapturableState {
-    Direct3DState9() {
-      for (uint32_t i = 0; i < renderTargets.size(); i++)
-        renderTargets[i] = nullptr;
-    }
 
-    std::array<D3D9Surface*, caps::MaxSimultaneousRenderTargets> renderTargets;
+    std::array<Com<D3D9Surface, false>, caps::MaxSimultaneousRenderTargets> renderTargets;
+    Com<D3D9Surface, false> depthStencil;
 
-    D3D9Surface* depthStencil = nullptr;
-    
   };
 
 

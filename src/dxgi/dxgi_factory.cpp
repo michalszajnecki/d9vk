@@ -2,7 +2,7 @@
 #include "dxgi_swapchain.h"
 
 namespace dxvk {
-  
+
   DxgiFactory::DxgiFactory(UINT Flags)
   : m_instance    (new DxvkInstance()),
     m_monitorInfo (this),
@@ -30,7 +30,8 @@ namespace dxvk {
      || riid == __uuidof(IDXGIFactory1)
      || riid == __uuidof(IDXGIFactory2)
      || riid == __uuidof(IDXGIFactory3)
-     || riid == __uuidof(IDXGIFactory4)) {
+     || riid == __uuidof(IDXGIFactory4)
+     || riid == __uuidof(IDXGIFactory5)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -191,7 +192,7 @@ namespace dxvk {
     if (dxvkAdapter == nullptr)
       return DXGI_ERROR_NOT_FOUND;
     
-    *ppAdapter = ref(new DxgiAdapter(this, dxvkAdapter));
+    *ppAdapter = ref(new DxgiAdapter(this, dxvkAdapter, Adapter));
     return S_OK;
   }
   
@@ -227,8 +228,18 @@ namespace dxvk {
           void**                ppvAdapter) {
     InitReturnPtr(ppvAdapter);
 
-    Logger::err("DxgiFactory::EnumWarpAdapter: Not implemented");
-    return E_NOTIMPL;
+    static bool s_errorShown = false;
+
+    if (!std::exchange(s_errorShown, true))
+      Logger::warn("DxgiFactory::EnumWarpAdapter: WARP not supported, returning first hardware adapter");
+
+    Com<IDXGIAdapter1> adapter;
+    HRESULT hr = EnumAdapters1(0, &adapter);
+
+    if (FAILED(hr))
+      return hr;
+
+    return adapter->QueryInterface(riid, ppvAdapter);
   }
 
 
@@ -310,5 +321,26 @@ namespace dxvk {
   UINT STDMETHODCALLTYPE DxgiFactory::GetCreationFlags() {
     return m_flags;
   }
-  
+
+
+  HRESULT STDMETHODCALLTYPE DxgiFactory::CheckFeatureSupport(
+          DXGI_FEATURE          Feature,
+          void*                 pFeatureSupportData,
+          UINT                  FeatureSupportDataSize) {
+    switch (Feature) {
+      case DXGI_FEATURE_PRESENT_ALLOW_TEARING: {
+        auto info = static_cast<BOOL*>(pFeatureSupportData);
+
+        if (FeatureSupportDataSize != sizeof(*info))
+          return E_INVALIDARG;
+        
+        *info = TRUE;
+      } return S_OK;
+
+      default:
+        Logger::err(str::format("DxgiFactory: CheckFeatureSupport: Unknown feature: ", uint32_t(Feature)));
+        return E_INVALIDARG;
+    }
+  }
+
 }

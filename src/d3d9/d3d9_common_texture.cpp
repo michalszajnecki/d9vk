@@ -1,5 +1,7 @@
 #include "d3d9_common_texture.h"
+
 #include "d3d9_util.h"
+#include "d3d9_device.h"
 
 #include <algorithm>
 
@@ -8,14 +10,17 @@ namespace dxvk {
   D3D9CommonTexture::D3D9CommonTexture(
           D3D9DeviceEx*             pDevice,
     const D3D9_COMMON_TEXTURE_DESC* pDesc,
-          D3DRESOURCETYPE           ResourceType)
-    : m_device(pDevice), m_desc(*pDesc), m_type(ResourceType) {
+          D3DRESOURCETYPE           ResourceType,
+          D3D9_VK_FORMAT_MAPPING    Mapping)
+    : m_device(pDevice), m_desc(*pDesc), m_type(ResourceType), m_mapping(Mapping) {
     if (m_desc.Format == D3D9Format::Unknown)
       m_desc.Format = (m_desc.Usage & D3DUSAGE_DEPTHSTENCIL)
                     ? D3D9Format::D32
                     : D3D9Format::X8R8G8B8;
 
-    m_format  = m_device->LookupFormat(m_desc.Format).FormatColor;
+    auto pxSize      = m_mapping.VideoFormatInfo.MacroPixelSize;
+    m_adjustedExtent = VkExtent3D{ m_desc.Width / pxSize.width, m_desc.Height / pxSize.height, m_desc.Depth };
+
     m_mapMode = DetermineMapMode();
     m_shadow  = DetermineShadowState();
 
@@ -64,7 +69,39 @@ namespace dxvk {
   }
   
 
-  HRESULT D3D9CommonTexture::NormalizeTextureProperties(D3D9_COMMON_TEXTURE_DESC* pDesc) {
+  HRESULT D3D9CommonTexture::NormalizeTextureProperties(
+          D3D9DeviceEx*             pDevice,
+          D3D9_COMMON_TEXTURE_DESC* pDesc,
+          D3D9_VK_FORMAT_MAPPING*   pMapping) {
+    auto* options = pDevice->GetOptions();
+
+    //////////////////////
+    // Mapping Validation
+
+    *pMapping = pDevice->LookupFormat(pDesc->Format);
+
+    // Handle DisableA8RT hack for The Sims 2
+    if (pDesc->Format == D3D9Format::A8       &&
+       (pDesc->Usage & D3DUSAGE_RENDERTARGET) &&
+        options->disableA8RT)
+      return D3DERR_INVALIDCALL;
+
+    // If the mapping is invalid then lets return invalid
+    // Some edge cases:
+    // NULL format does not map to anything, but should succeed
+    // SCRATCH textures can still be made if the device does not support
+    // the format at all.
+
+    if (!pMapping->IsValid() && pDesc->Format != D3D9Format::NULL_FORMAT) {
+      auto info = pDevice->UnsupportedFormatInfo(pDesc->Format);
+
+      if (pDesc->Pool != D3DPOOL_SCRATCH || info.elementSize == 0)
+        return D3DERR_INVALIDCALL;
+    }
+
+    ///////////////////
+    // Desc Validation
+
     if (pDesc->Width == 0 || pDesc->Height == 0 || pDesc->Depth == 0)
       return D3DERR_INVALIDCALL;
     
@@ -73,6 +110,10 @@ namespace dxvk {
 
     // Using MANAGED pool with DYNAMIC usage is illegal
     if (IsPoolManaged(pDesc->Pool) && (pDesc->Usage & D3DUSAGE_DYNAMIC))
+      return D3DERR_INVALIDCALL;
+
+    // D3DUSAGE_WRITEONLY doesn't apply to textures.
+    if (pDesc->Usage & D3DUSAGE_WRITEONLY)
       return D3DERR_INVALIDCALL;
 
     // RENDERTARGET and DEPTHSTENCIL must be default pool
@@ -89,7 +130,7 @@ namespace dxvk {
     
     if (pDesc->MipLevels == 0 || pDesc->MipLevels > maxMipLevelCount)
       pDesc->MipLevels = maxMipLevelCount;
-    
+
     return D3D_OK;
   }
 
@@ -107,6 +148,11 @@ namespace dxvk {
     info.access = VK_ACCESS_TRANSFER_READ_BIT
                 | VK_ACCESS_TRANSFER_WRITE_BIT;
 
+    if (m_mapping.VideoFormatInfo.FormatType != D3D9VideoFormat_None) {
+      info.usage  |= VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+      info.stages |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+
     VkMemoryPropertyFlags memType = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
                                   | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
@@ -123,17 +169,17 @@ namespace dxvk {
   VkDeviceSize D3D9CommonTexture::GetMipSize(UINT Subresource) const {
     const UINT MipLevel = Subresource % m_desc.MipLevels;
 
-    const DxvkFormatInfo* formatInfo = imageFormatInfo(
-      m_device->LookupFormat(m_desc.Format).FormatColor);
+    const DxvkFormatInfo formatInfo = m_mapping.FormatColor != VK_FORMAT_UNDEFINED
+      ? *imageFormatInfo(m_mapping.FormatColor)
+      : m_device->UnsupportedFormatInfo(m_desc.Format);
 
     const VkExtent3D mipExtent = util::computeMipLevelExtent(
-      VkExtent3D { m_desc.Width, m_desc.Height, m_desc.Depth },
-      MipLevel);
+      m_adjustedExtent, MipLevel);
     
     const VkExtent3D blockCount = util::computeBlockCount(
-      mipExtent, formatInfo->blockSize);
+      mipExtent, formatInfo.blockSize);
 
-    return formatInfo->elementSize
+    return formatInfo.elementSize
          * blockCount.width
          * blockCount.height
          * blockCount.depth;
@@ -141,11 +187,9 @@ namespace dxvk {
 
 
   Rc<DxvkImage> D3D9CommonTexture::CreatePrimaryImage(D3DRESOURCETYPE ResourceType) const {
-    D3D9_VK_FORMAT_MAPPING formatInfo = m_device->LookupFormat(m_desc.Format);
-
     DxvkImageCreateInfo imageInfo;
     imageInfo.type            = GetImageTypeFromResourceType(ResourceType);
-    imageInfo.format          = formatInfo.FormatColor;
+    imageInfo.format          = m_mapping.FormatColor;
     imageInfo.flags           = 0;
     imageInfo.sampleCount     = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.extent.width    = m_desc.Width;
@@ -164,21 +208,26 @@ namespace dxvk {
     imageInfo.tiling          = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.layout          = VK_IMAGE_LAYOUT_GENERAL;
 
+    if (m_mapping.VideoFormatInfo.FormatType != D3D9VideoFormat_None) {
+      imageInfo.usage  |= VK_IMAGE_USAGE_STORAGE_BIT;
+      imageInfo.stages |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+
     DecodeMultiSampleType(m_desc.MultiSample, m_desc.MultisampleQuality, &imageInfo.sampleCount);
 
     // The image must be marked as mutable if it can be reinterpreted
     // by a view with a different format. Depth-stencil formats cannot
     // be reinterpreted in Vulkan, so we'll ignore those.
-    auto formatProperties = imageFormatInfo(formatInfo.FormatColor);
+    auto formatProperties = imageFormatInfo(m_mapping.FormatColor);
 
-    bool isMutable     = formatInfo.FormatSrgb != VK_FORMAT_UNDEFINED;
+    bool isMutable     = m_mapping.FormatSrgb != VK_FORMAT_UNDEFINED;
     bool isColorFormat = (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
 
     if (isMutable && isColorFormat) {
       imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 
       imageInfo.viewFormatCount = 2;
-      imageInfo.viewFormats     = formatInfo.Formats;
+      imageInfo.viewFormats     = m_mapping.Formats;
     }
 
     if (m_desc.Usage & D3DUSAGE_RENDERTARGET || m_desc.Usage & D3DUSAGE_AUTOGENMIPMAP) {
@@ -240,6 +289,18 @@ namespace dxvk {
     imageInfo.sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
     return m_device->GetDXVKDevice()->createImage(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  }
+
+
+  void D3D9CommonTexture::RecreateSampledView(UINT Lod) {
+    // This will be a no-op for SYSTEMMEM types given we
+    // don't expose the cap to allow texturing with them.
+    if (unlikely(m_mapMode == D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM))
+      return;
+
+    const D3D9_VK_FORMAT_MAPPING formatInfo = m_device->LookupFormat(m_desc.Format);
+
+    m_views.Sample = CreateColorViewPair(formatInfo, AllLayers, VK_IMAGE_USAGE_SAMPLED_BIT, Lod);
   }
 
 
@@ -387,6 +448,10 @@ namespace dxvk {
     if (UsageFlags != VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
       viewInfo.aspect &= ~VK_IMAGE_ASPECT_STENCIL_BIT;
 
+    if (UsageFlags == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ||
+        UsageFlags == VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+      viewInfo.numLevels = 1;
+
     // Remove swizzle on depth views.
     if (UsageFlags == VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
       viewInfo.swizzle = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -437,9 +502,6 @@ namespace dxvk {
           m_views.SubresourceDepth[i][j] = CreateView(formatInfo, i, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, j, FALSE);
       }
     }
-
-    if (m_desc.Usage & D3DUSAGE_AUTOGENMIPMAP)
-      m_views.MipGenRT = CreateView(formatInfo, AllLayers, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, FALSE);
   }
 
 

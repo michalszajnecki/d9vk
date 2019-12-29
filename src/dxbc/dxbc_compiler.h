@@ -160,6 +160,7 @@ namespace dxvk {
     uint32_t builtinLayer         = 0;
     uint32_t builtinViewportId    = 0;
     uint32_t builtinInvocationId  = 0;
+    uint32_t invocationCount      = 0;
   };
   
   
@@ -171,6 +172,7 @@ namespace dxvk {
     
     uint32_t builtinFragCoord     = 0;
     uint32_t builtinDepth         = 0;
+    uint32_t builtinStencilRef    = 0;
     uint32_t builtinIsFrontFace   = 0;
     uint32_t builtinSampleId      = 0;
     uint32_t builtinSampleMaskIn  = 0;
@@ -471,10 +473,13 @@ namespace dxvk {
     // Function state tracking. Required in order
     // to properly end functions in some cases.
     bool m_insideFunction = false;
-    
+
     ///////////////////////////////////////////////////////////
     // Array of input values. Since v# registers are indexable
     // in DXBC, we need to copy them into an array first.
+    uint32_t m_vArrayLength   = 0;
+    uint32_t m_vArrayLengthId = 0;
+
     uint32_t m_vArray = 0;
     
     ////////////////////////////////////////////////////
@@ -504,6 +509,10 @@ namespace dxvk {
     // Struct type used for UAV counter buffers
     uint32_t m_uavCtrStructType  = 0;
     uint32_t m_uavCtrPointerType = 0;
+    
+    ////////////////////////////////
+    // Function IDs for subroutines
+    std::unordered_map<uint32_t, uint32_t> m_subroutines;
     
     ///////////////////////////////////////////////////
     // Entry point description - we'll need to declare
@@ -566,7 +575,8 @@ namespace dxvk {
     void emitDclConstantBufferVar(
             uint32_t                regIdx,
             uint32_t                numConstants,
-      const char*                   name);
+      const char*                   name,
+            bool                    asSsbo);
     
     void emitDclSampler(
       const DxbcShaderInstruction&  ins);
@@ -656,6 +666,9 @@ namespace dxvk {
       const DxbcShaderInstruction&  ins);
     
     void emitVectorImul(
+      const DxbcShaderInstruction&  ins);
+    
+    void emitVectorMsad(
       const DxbcShaderInstruction&  ins);
     
     void emitVectorShift(
@@ -778,6 +791,15 @@ namespace dxvk {
       const DxbcShaderInstruction&  ins);
     
     void emitControlFlowDiscard(
+      const DxbcShaderInstruction&  ins);
+    
+    void emitControlFlowLabel(
+      const DxbcShaderInstruction&  ins);
+
+    void emitControlFlowCall(
+      const DxbcShaderInstruction&  ins);
+    
+    void emitControlFlowCallc(
       const DxbcShaderInstruction&  ins);
     
     void emitControlFlow(
@@ -1214,6 +1236,9 @@ namespace dxvk {
       const DxbcRegisterInfo& type);
     
     uint32_t getPerVertexBlockId();
+
+    uint32_t getFunctionId(
+            uint32_t          functionNr);
     
     DxbcCompilerHsForkJoinPhase* getCurrentHsForkJoinPhase();
     

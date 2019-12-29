@@ -23,7 +23,7 @@ namespace dxvk {
     return (what / to) * to;
   }
 
-  // Equivelant of std::clamp for use with floating point numbers
+  // Equivalent of std::clamp for use with floating point numbers
   // Handles (-){INFINITY,NAN} cases.
   // Will return min in cases of NAN, etc.
   inline float fclamp(float value, float min, float max) {

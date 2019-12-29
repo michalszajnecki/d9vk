@@ -1,5 +1,6 @@
 #pragma once
 
+#include "d3d9_device.h"
 #include "d3d9_surface.h"
 #include "d3d9_volume.h"
 #include "d3d9_util.h"
@@ -21,9 +22,10 @@ namespace dxvk {
     D3D9BaseTexture(
             D3D9DeviceEx*             pDevice,
       const D3D9_COMMON_TEXTURE_DESC* pDesc,
-            D3DRESOURCETYPE           ResourceType)
+            D3DRESOURCETYPE           ResourceType,
+            D3D9_VK_FORMAT_MAPPING    Mapping)
       : D3D9Resource<Base...> ( pDevice )
-      , m_texture             ( pDevice, pDesc, ResourceType )
+      , m_texture             ( pDevice, pDesc, ResourceType, Mapping )
       , m_lod                 ( 0 )
       , m_autogenFilter       ( D3DTEXF_LINEAR ) {
       const uint32_t arraySlices = m_texture.Desc()->ArraySize;
@@ -115,7 +117,8 @@ namespace dxvk {
 
     D3D9Texture2D(
             D3D9DeviceEx*             pDevice,
-      const D3D9_COMMON_TEXTURE_DESC* pDesc);
+      const D3D9_COMMON_TEXTURE_DESC* pDesc,
+            D3D9_VK_FORMAT_MAPPING    Mapping);
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
 
@@ -140,7 +143,8 @@ namespace dxvk {
 
     D3D9Texture3D(
             D3D9DeviceEx*             pDevice,
-      const D3D9_COMMON_TEXTURE_DESC* pDesc);
+      const D3D9_COMMON_TEXTURE_DESC* pDesc,
+            D3D9_VK_FORMAT_MAPPING    Mapping);
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
 
@@ -165,7 +169,8 @@ namespace dxvk {
 
     D3D9TextureCube(
             D3D9DeviceEx*             pDevice,
-      const D3D9_COMMON_TEXTURE_DESC* pDesc);
+      const D3D9_COMMON_TEXTURE_DESC* pDesc,
+            D3D9_VK_FORMAT_MAPPING    Mapping);
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
 

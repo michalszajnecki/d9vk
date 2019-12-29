@@ -1,14 +1,17 @@
 #include "d3d9_surface.h"
 #include "d3d9_texture.h"
 
+#include "d3d9_device.h"
+
 namespace dxvk {
 
   D3D9Surface::D3D9Surface(
           D3D9DeviceEx*             pDevice,
-    const D3D9_COMMON_TEXTURE_DESC* pDesc)
+    const D3D9_COMMON_TEXTURE_DESC* pDesc,
+          D3D9_VK_FORMAT_MAPPING    Mapping)
     : D3D9SurfaceBase(
         pDevice,
-        new D3D9CommonTexture( pDevice, pDesc, D3DRTYPE_TEXTURE ),
+        new D3D9CommonTexture( pDevice, pDesc, D3DRTYPE_TEXTURE, Mapping ),
         0, 0,
         nullptr) { }
 

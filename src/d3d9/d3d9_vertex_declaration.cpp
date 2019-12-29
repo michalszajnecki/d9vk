@@ -205,6 +205,7 @@ namespace dxvk {
     std::copy(elements.begin(), elements.begin() + elemCount, m_elements.data());
   }
 
+
   void D3D9VertexDecl::Classify() {
     for (const auto& element : m_elements) {
       if (element.Usage == D3DDECLUSAGE_COLOR && element.UsageIndex == 0)
@@ -213,6 +214,17 @@ namespace dxvk {
         m_flags.set(D3D9VertexDeclFlag::HasColor1);
       else if (element.Usage == D3DDECLUSAGE_POSITIONT)
         m_flags.set(D3D9VertexDeclFlag::HasPositionT);
+      else if (element.Usage == D3DDECLUSAGE_PSIZE)
+        m_flags.set(D3D9VertexDeclFlag::HasPointSize);
+      else if (element.Usage == D3DDECLUSAGE_FOG)
+        m_flags.set(D3D9VertexDeclFlag::HasFog);
+      else if (element.Usage == D3DDECLUSAGE_BLENDWEIGHT)
+        m_flags.set(D3D9VertexDeclFlag::HasBlendWeight);
+      else if (element.Usage == D3DDECLUSAGE_BLENDINDICES)
+        m_flags.set(D3D9VertexDeclFlag::HasBlendIndices);
+
+      if (element.Usage == D3DDECLUSAGE_TEXCOORD)
+        m_texcoordMask |= GetDecltypeCount(D3DDECLTYPE(element.Type)) << (element.UsageIndex * 3);
     }
   }
 

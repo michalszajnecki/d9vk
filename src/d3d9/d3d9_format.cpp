@@ -147,14 +147,28 @@ namespace dxvk {
 
       case D3D9Format::A2W10V10U10: return {}; // Unsupported
 
-      case D3D9Format::UYVY: return {}; // Unsupported
+      case D3D9Format::UYVY: return {
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_FORMAT_UNDEFINED,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+          VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
+        { D3D9VideoFormat_UYVY, { 2u, 1u } }
+      };
 
       case D3D9Format::R8G8_B8G8: return {
         VK_FORMAT_G8B8G8R8_422_UNORM, // This format may have been _SCALED in DX9.
         VK_FORMAT_UNDEFINED,
         VK_IMAGE_ASPECT_COLOR_BIT };
 
-      case D3D9Format::YUY2: return {}; // Unsupported
+      case D3D9Format::YUY2: return {
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_FORMAT_UNDEFINED,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+          VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
+        { D3D9VideoFormat_YUY2, { 2u, 1u } }
+      };
 
       case D3D9Format::G8R8_G8B8: return {
         VK_FORMAT_B8G8R8G8_422_UNORM, // This format may have been _SCALED in DX9.
@@ -375,7 +389,13 @@ namespace dxvk {
     }
   }
 
-  D3D9VkFormatTable::D3D9VkFormatTable(const Rc<DxvkAdapter>& adapter) {
+  D3D9VkFormatTable::D3D9VkFormatTable(
+    const Rc<DxvkAdapter>& adapter,
+    const D3D9Options&     options) {
+    m_dfSupport = options.supportDFFormats;
+    m_x4r4g4b4Support = options.supportX4R4G4B4;
+    m_d32supportFinal = options.supportD32;
+
     // AMD do not support 24-bit depth buffers on Vulkan,
     // so we have to fall back to a 32-bit depth format.
     m_d24s8Support = CheckImageFormatSupport(adapter, VK_FORMAT_D24_UNORM_S8_UINT,
@@ -402,6 +422,18 @@ namespace dxvk {
   D3D9_VK_FORMAT_MAPPING D3D9VkFormatTable::GetFormatMapping(
           D3D9Format          Format) const {
     D3D9_VK_FORMAT_MAPPING mapping = ConvertFormatUnfixed(Format);
+
+    if (Format == D3D9Format::X4R4G4B4 && !m_x4r4g4b4Support)
+      return D3D9_VK_FORMAT_MAPPING();
+
+    if (Format == D3D9Format::DF16 && !m_dfSupport)
+      return D3D9_VK_FORMAT_MAPPING();
+
+    if (Format == D3D9Format::DF24 && !m_dfSupport)
+      return D3D9_VK_FORMAT_MAPPING();
+
+    if (Format == D3D9Format::D32 && !m_d32supportFinal)
+      return D3D9_VK_FORMAT_MAPPING();
     
     if (!m_d24s8Support && mapping.FormatColor == VK_FORMAT_D24_UNORM_S8_UINT)
       mapping.FormatColor = VK_FORMAT_D32_SFLOAT_S8_UINT;
@@ -410,6 +442,48 @@ namespace dxvk {
       mapping.FormatColor = m_d24s8Support ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
 
     return mapping;
+  }
+
+
+  DxvkFormatInfo D3D9VkFormatTable::GetUnsupportedFormatInfo(
+    D3D9Format            Format) const {
+    switch (Format) {
+      case D3D9Format::R8G8B8:
+        return { 3, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::R3G3B2:
+        return { 1, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::A8R3G3B2:
+        return { 2, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::A8P8:
+        return { 2, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::P8:
+        return { 1, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::L6V5U5:
+        return { 2, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::X8L8V8U8:
+        return { 4, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      case D3D9Format::A2W10V10U10:
+        return { 4, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      // MULTI2_ARGB8 -> Don't have a clue what this is.
+
+      case D3D9Format::CxV8U8:
+        return { 2, VK_IMAGE_ASPECT_COLOR_BIT };
+
+      // A1 -> Doesn't map nicely here cause it's not byte aligned.
+      // Gonna just pretend that doesn't exist until something
+      // depends on that.
+
+      default:
+        return {};
+    }
   }
   
 

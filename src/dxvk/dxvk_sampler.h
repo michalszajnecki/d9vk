@@ -63,21 +63,12 @@ namespace dxvk {
       return m_sampler;
     }
     
-    /**
-     * \brief Sampler parameters
-     * \returns Sampler parameters
-     */
-    const DxvkSamplerCreateInfo& info() const {
-      return m_info;
-    }
-    
   private:
     
     Rc<vk::DeviceFn>      m_vkd;
-    DxvkSamplerCreateInfo m_info;
     VkSampler             m_sampler = VK_NULL_HANDLE;
 
-    VkBorderColor getBorderColor(VkClearColorValue borderColor) const;
+    VkBorderColor getBorderColor(bool depthCompare, VkClearColorValue borderColor) const;
     
   };
   

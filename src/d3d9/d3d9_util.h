@@ -13,6 +13,11 @@
 
 namespace dxvk {
 
+  struct D3D9ShaderMasks {
+    uint32_t samplerMask;
+    uint32_t rtMask;
+  };
+
   struct D3D9MipFilter {
     bool                MipsEnabled;
     VkSamplerMipmapMode MipFilter;
@@ -93,17 +98,6 @@ namespace dxvk {
 
   VkImageUsageFlags GetImageUsageFlags(DWORD Usage);
 
-  template <typename T>
-  void changePrivate(T*& srcPtr, T* newPtr) {
-    if (srcPtr != nullptr)
-      srcPtr->ReleasePrivate();
-
-    if (newPtr != nullptr)
-      newPtr->AddRefPrivate();
-
-    srcPtr = newPtr;
-  }
-
   inline void DecodeD3DCOLOR(D3DCOLOR color, float* rgba) {
     // Encoded in D3DCOLOR as argb
     rgba[3] = (float)((color & 0xff000000) >> 24) / 255.0f;
@@ -174,6 +168,8 @@ namespace dxvk {
 
   uint32_t GetDecltypeSize(D3DDECLTYPE Type);
 
+  uint32_t GetDecltypeCount(D3DDECLTYPE Type);
+
   void ConvertBox(D3DBOX box, VkOffset3D& offset, VkExtent3D& extent);
 
   void ConvertRect(RECT rect, VkOffset3D& offset, VkExtent3D& extent);
@@ -197,6 +193,10 @@ namespace dxvk {
 
   inline bool IsPoolManaged(D3DPOOL Pool) {
     return Pool == D3DPOOL_MANAGED || Pool == D3DPOOL_MANAGED_EX;
+  }
+
+  inline D3DRENDERSTATETYPE ColorWriteIndex(uint32_t i) {
+    return D3DRENDERSTATETYPE(i ? D3DRS_COLORWRITEENABLE1 + i - 1 : D3DRS_COLORWRITEENABLE);
   }
 
 }

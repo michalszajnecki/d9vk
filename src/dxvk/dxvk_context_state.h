@@ -20,7 +20,7 @@ namespace dxvk {
    * of the graphics and compute pipelines
    * has changed and/or needs to be updated.
    */
-  enum class DxvkContextFlag : uint64_t  {
+  enum class DxvkContextFlag : uint32_t  {
     GpRenderPassBound,          ///< Render pass is currently bound
     GpCondActive,               ///< Conditional rendering is enabled
     GpXfbActive,                ///< Transform feedback is enabled
@@ -29,8 +29,7 @@ namespace dxvk {
     GpDirtyPipeline,            ///< Graphics pipeline binding is out of date
     GpDirtyPipelineState,       ///< Graphics pipeline needs to be recompiled
     GpDirtyResources,           ///< Graphics pipeline resource bindings are out of date
-    GpDirtyDescriptorOffsets,   ///< Graphics descriptor set needs to be rebound
-    GpDirtyDescriptorSet,       ///< Graphics descriptor set needs to be updated
+    GpDirtyDescriptorBinding,   ///< Graphics descriptor set needs to be rebound
     GpDirtyVertexBuffers,       ///< Vertex buffer bindings are out of date
     GpDirtyIndexBuffer,         ///< Index buffer binding are out of date
     GpDirtyXfbBuffers,          ///< Transform feedback buffer bindings are out of date
@@ -49,8 +48,7 @@ namespace dxvk {
     CpDirtyPipeline,            ///< Compute pipeline binding are out of date
     CpDirtyPipelineState,       ///< Compute pipeline needs to be recompiled
     CpDirtyResources,           ///< Compute pipeline resource bindings are out of date
-    CpDirtyDescriptorOffsets,   ///< Compute descriptor set needs to be rebound
-    CpDirtyDescriptorSet,       ///< Compute descriptor set needs to be updated
+    CpDirtyDescriptorBinding,   ///< Compute descriptor set needs to be rebound
     
     DirtyDrawBuffer,            ///< Indirect argument buffer is dirty
     DirtyPushConstants,         ///< Push constant data has changed

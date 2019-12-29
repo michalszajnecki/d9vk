@@ -1,5 +1,6 @@
 #include "d3d9_common_buffer.h"
 
+#include "d3d9_device.h"
 #include "d3d9_util.h"
 
 namespace dxvk {
@@ -75,7 +76,7 @@ namespace dxvk {
       info.access |= VK_ACCESS_INDEX_READ_BIT;
     }
 
-    if (m_desc.Usage & D3DUSAGE_DYNAMIC) {
+    if (GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT) {
       info.stages |= VK_PIPELINE_STAGE_HOST_BIT;
       info.access |= VK_ACCESS_HOST_WRITE_BIT;
 

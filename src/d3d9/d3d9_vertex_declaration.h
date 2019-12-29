@@ -1,6 +1,7 @@
 #pragma once
 
 #include "d3d9_device_child.h"
+#include "d3d9_util.h"
 
 #include <vector>
 
@@ -9,7 +10,11 @@ namespace dxvk {
   enum D3D9VertexDeclFlag {
     HasColor0,
     HasColor1,
-    HasPositionT
+    HasPositionT,
+    HasPointSize,
+    HasFog,
+    HasBlendWeight,
+    HasBlendIndices
   };
   using D3D9VertexDeclFlags = Flags<D3D9VertexDeclFlag>;
 
@@ -57,6 +62,10 @@ namespace dxvk {
       return m_flags.test(flag);
     }
 
+    uint32_t GetTexcoordMask() const {
+      return m_texcoordMask;
+    }
+
   private:
 
     void Classify();
@@ -66,6 +75,8 @@ namespace dxvk {
     D3D9VertexElements             m_elements;
 
     DWORD                          m_fvf;
+
+    uint32_t                       m_texcoordMask = 0;
 
   };
 

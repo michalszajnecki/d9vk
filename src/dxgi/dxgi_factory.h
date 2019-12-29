@@ -10,7 +10,7 @@
 
 namespace dxvk {
     
-  class DxgiFactory : public DxgiObject<IDXGIFactory4> {
+  class DxgiFactory : public DxgiObject<IDXGIFactory5> {
     
   public:
     
@@ -112,7 +112,16 @@ namespace dxvk {
             DWORD                 dwCookie) final;
     
     UINT STDMETHODCALLTYPE GetCreationFlags() final;
-    
+
+    HRESULT STDMETHODCALLTYPE CheckFeatureSupport(
+            DXGI_FEATURE          Feature,
+            void*                 pFeatureSupportData,
+            UINT                  FeatureSupportDataSize) final;
+
+    Rc<DxvkInstance> GetDXVKInstance() const {
+      return m_instance;
+    }
+
     const DxgiOptions* GetOptions() const {
       return &m_options;
     }

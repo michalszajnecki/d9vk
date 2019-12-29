@@ -5,7 +5,8 @@
 #include "dxso_modinfo.h"
 #include "dxso_isgn.h"
 
-#include "../d3d9/d3d9_caps.h"
+#include "../d3d9/d3d9_constant_layout.h"
+#include "../d3d9/d3d9_shader_permutations.h"
 #include "../spirv/spirv_module.h"
 
 namespace dxvk {
@@ -154,6 +155,7 @@ namespace dxvk {
   struct DxsoCompilerPsPart {
     uint32_t functionId         = 0;
     uint32_t samplerTypeSpec    = 0;
+    uint32_t projectionSpec     = 0;
 
     //////////////
     // Misc Types
@@ -174,6 +176,9 @@ namespace dxvk {
 
     uint32_t killState          = 0;
     uint32_t builtinLaneId      = 0;
+
+    uint32_t diffuseColorIn  = 0;
+    uint32_t specularColorIn = 0;
   };
 
   struct DxsoCfgBlockIf {
@@ -215,10 +220,11 @@ namespace dxvk {
   public:
 
     DxsoCompiler(
-      const std::string&      fileName,
-      const DxsoModuleInfo&   moduleInfo,
-      const DxsoProgramInfo&  programInfo,
-      const DxsoAnalysisInfo& analysis);
+      const std::string&        fileName,
+      const DxsoModuleInfo&     moduleInfo,
+      const DxsoProgramInfo&    programInfo,
+      const DxsoAnalysisInfo&   analysis,
+      const D3D9ConstantLayout& layout);
 
     /**
      * \brief Processes a single instruction
@@ -229,9 +235,14 @@ namespace dxvk {
 
     /**
      * \brief Finalizes the shader
-     * \returns The final shader object
      */
-    Rc<DxvkShader> finalize();
+    void finalize();
+
+    /**
+     * \brief Compiles the shader
+     * \returns The final shader objects
+     */
+    DxsoPermutations compile();
 
     const DxsoIsgn& isgn() { return m_isgn; }
     const DxsoIsgn& osgn() { return m_osgn; }
@@ -246,6 +257,7 @@ namespace dxvk {
     DxsoModuleInfo             m_moduleInfo;
     DxsoProgramInfo            m_programInfo;
     const DxsoAnalysisInfo*    m_analysis;
+    const D3D9ConstantLayout*  m_layout;
 
     DxsoShaderMetaInfo         m_meta;
     DxsoDefinedConstants       m_constants;
@@ -263,6 +275,12 @@ namespace dxvk {
     std::array<
       DxsoRegisterPointer,
       DxsoMaxTempRegs> m_rRegs;
+
+    ////////////////////////////////////////////////
+    // Predicate registers
+    std::array<
+      DxsoRegisterPointer,
+      1> m_pRegs;
 
     //////////////////////////////////////////////////////////////////
     // Array of input values. Since v# and o# registers are indexable
@@ -449,22 +467,17 @@ namespace dxvk {
         reg.hasRelative ? &reg.relative : nullptr);
     }
 
-    uint32_t emitBoolComparison(DxsoComparison cmp, uint32_t a, uint32_t b);
+    uint32_t emitBoolComparison(DxsoVectorType type, DxsoComparison cmp, uint32_t a, uint32_t b);
 
     DxsoRegisterValue emitValueLoad(
             DxsoRegisterPointer ptr);
-
-    uint32_t getFloatConstantCount() {
-      return m_programInfo.type() == DxsoProgramTypes::VertexShader
-             ? caps::MaxFloatConstantsVS
-             : caps::MaxFloatConstantsPS;
-    }
 
     void emitDstStore(
             DxsoRegisterPointer     ptr,
             DxsoRegisterValue       value,
             DxsoRegMask             writeMask,
             bool                    saturate,
+            DxsoRegisterValue       predicate,
             int8_t                  shift,
             DxsoRegisterId          regId) {
       if (regId.type == DxsoRegisterType::RasterizerOut && regId.num == RasterOutFog)
@@ -497,13 +510,16 @@ namespace dxvk {
         }
       }
 
-      this->emitValueStore(ptr, value, writeMask);
+      this->emitValueStore(ptr, value, writeMask, predicate);
     }
+
+    DxsoRegisterValue applyPredicate(DxsoRegisterValue pred, DxsoRegisterValue dst, DxsoRegisterValue src);
 
     void emitValueStore(
             DxsoRegisterPointer     ptr,
             DxsoRegisterValue       value,
-            DxsoRegMask             writeMask);
+            DxsoRegMask             writeMask,
+            DxsoRegisterValue       predicate);
 
     DxsoRegisterValue emitClampBoundReplicant(
             DxsoRegisterValue       srcValue,
@@ -556,6 +572,13 @@ namespace dxvk {
         reg.hasRelative ? &reg.relative : nullptr);
     }
 
+    DxsoRegisterValue emitPredicateLoad(const DxsoInstructionContext& ctx) {
+      if (!ctx.instruction.predicated)
+        return DxsoRegisterValue();
+
+      return emitRegisterLoad(ctx.pred, IdentityWriteMask);
+    }
+
     DxsoRegisterValue emitRegisterLoadTexcoord(
       const DxsoRegister& reg,
             DxsoRegMask   writeMask) {
@@ -565,6 +588,8 @@ namespace dxvk {
 
       return this->emitRegisterLoad(lookup, writeMask);
     }
+
+    Rc<DxvkShader> compileShader();
 
     ///////////////////////////////
     // Handle shader ops
@@ -578,6 +603,7 @@ namespace dxvk {
     bool isScalarRegister(DxsoRegisterId id);
 
     void emitMov(const DxsoInstructionContext& ctx);
+    void emitPredicateOp(const DxsoInstructionContext& ctx);
     void emitVectorAlu(const DxsoInstructionContext& ctx);
     void emitMatrixAlu(const DxsoInstructionContext& ctx);
 
@@ -605,6 +631,14 @@ namespace dxvk {
     void emitTexCoord(const DxsoInstructionContext& ctx);
     void emitTextureSample(const DxsoInstructionContext& ctx);
     void emitTextureKill(const DxsoInstructionContext& ctx);
+
+    uint32_t emitSample(
+            bool                    projected,
+            uint32_t                resultType,
+            uint32_t                sampledImage,
+            uint32_t                coordinates,
+            uint32_t                reference,
+      const SpirvImageOperands&     operands);
 
     ///////////////////////////////
     // Shader finalization methods

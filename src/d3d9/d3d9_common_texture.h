@@ -1,11 +1,14 @@
 #pragma once
 
-#include "d3d9_device.h"
 #include "d3d9_format.h"
+#include "d3d9_util.h"
+#include "d3d9_caps.h"
 
 #include "../dxvk/dxvk_device.h"
 
 namespace dxvk {
+
+  class D3D9DeviceEx;
 
   /**
    * \brief Image memory mapping mode
@@ -50,7 +53,6 @@ namespace dxvk {
 
   struct D3D9ViewSet {
     D3D9ColorView                    Sample;
-    Rc<DxvkImageView>                MipGenRT;
 
     std::array<
       std::array<D3D9ColorView, 15>, 6>     SubresourceSample;
@@ -87,7 +89,8 @@ namespace dxvk {
     D3D9CommonTexture(
             D3D9DeviceEx*             pDevice,
       const D3D9_COMMON_TEXTURE_DESC* pDesc,
-            D3DRESOURCETYPE           ResourceType);
+            D3DRESOURCETYPE           ResourceType,
+            D3D9_VK_FORMAT_MAPPING    Mapping);
 
     ~D3D9CommonTexture();
 
@@ -114,8 +117,8 @@ namespace dxvk {
      * \brief Vulkan Format
      * \returns The Vulkan format of the resource
      */
-    VkFormat Format() const {
-      return m_format;
+    const D3D9_VK_FORMAT_MAPPING GetFormatMapping() const {
+      return m_mapping;
     }
 
     /**
@@ -195,7 +198,9 @@ namespace dxvk {
      * \returns \c S_OK if the parameters are valid
      */
     static HRESULT NormalizeTextureProperties(
-            D3D9_COMMON_TEXTURE_DESC*  pDesc);
+            D3D9DeviceEx*              pDevice,
+            D3D9_COMMON_TEXTURE_DESC*  pDesc,
+            D3D9_VK_FORMAT_MAPPING*    pMapping);
 
     /**
      * \brief Lock Flags
@@ -254,6 +259,11 @@ namespace dxvk {
      */
     void DestroyBufferSubresource(UINT Subresource) {
       m_buffers[Subresource] = nullptr;
+      SetDirty(Subresource, true);
+    }
+
+    bool IsDynamic() const {
+      return m_desc.Usage & D3DUSAGE_DYNAMIC;
     }
 
     /**
@@ -262,6 +272,14 @@ namespace dxvk {
      */
     bool IsManaged() const {
       return IsPoolManaged(m_desc.Pool);
+    }
+
+    /**
+     * \brief Render Target
+     * \returns Whether a resource is a render target or not
+     */
+    bool IsRenderTarget() const {
+      return m_desc.Usage & D3DUSAGE_RENDERTARGET;
     }
 
     /**
@@ -285,23 +303,14 @@ namespace dxvk {
      * Recreates the main view of the sampler w/ a specific LOD.
      * SetLOD only works on MANAGED textures so this is A-okay.
      */
-    void RecreateSampledView(UINT Lod) {
-      // This will be a no-op for SYSTEMMEM types given we
-      // don't expose the cap to allow texturing with them.
-      if (unlikely(m_mapMode == D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM))
-        return;
-
-      const D3D9_VK_FORMAT_MAPPING formatInfo = m_device->LookupFormat(m_desc.Format);
-
-      m_views.Sample = CreateColorViewPair(formatInfo, AllLayers, VK_IMAGE_USAGE_SAMPLED_BIT, Lod);
-    }
+    void RecreateSampledView(UINT Lod);
 
     /**
      * \brief Extent
      * \returns The extent of the top-level mip
      */
     VkExtent3D GetExtent() const {
-      return VkExtent3D{ m_desc.Width, m_desc.Height, m_desc.Depth };
+      return m_adjustedExtent;
     }
 
     /**
@@ -321,7 +330,12 @@ namespace dxvk {
       return m_type;
     }
 
+    const D3D9_VK_FORMAT_MAPPING& GetMapping() { return m_mapping; }
+
     bool MarkLocked(UINT Subresource, bool value) { return std::exchange(m_locked[Subresource], value); }
+
+    bool SetDirty(UINT Subresource, bool value) { return std::exchange(m_dirty[Subresource], value); }
+    void MarkAllDirty() { for (uint32_t i = 0; i < m_dirty.size(); i++) m_dirty[i] = true; }
 
   private:
 
@@ -340,7 +354,9 @@ namespace dxvk {
 
     D3D9ViewSet                   m_views;
 
-    VkFormat                      m_format;
+    D3D9_VK_FORMAT_MAPPING        m_mapping;
+
+    VkExtent3D                    m_adjustedExtent;
 
     bool                          m_shadow; //< Depth Compare-ness
 
@@ -350,6 +366,9 @@ namespace dxvk {
 
     D3D9SubresourceArray<
       bool>                       m_locked = { };
+
+    D3D9SubresourceArray<
+      bool>                       m_dirty = { };
 
     /**
      * \brief Mip level

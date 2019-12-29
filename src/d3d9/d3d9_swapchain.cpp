@@ -2,6 +2,8 @@
 #include "d3d9_surface.h"
 #include "d3d9_monitor.h"
 
+#include "d3d9_hud.h"
+
 #include <d3d9_presenter_frag.h>
 #include <d3d9_presenter_vert.h>
 
@@ -26,7 +28,10 @@ namespace dxvk {
     const D3DDISPLAYMODEEX*      pFullscreenDisplayMode)
     : D3D9SwapChainExBase(pDevice)
     , m_device           (pDevice->GetDXVKDevice())
-    , m_context          (m_device->createContext()) {
+    , m_context          (m_device->createContext())
+    , m_frameLatencyCap  (pDevice->GetOptions()->maxFrameLatency)
+    , m_frameLatencySignal(new sync::Fence(m_frameId))
+    , m_dialog            (pDevice->GetOptions()->enableDialogMode) {
     UpdateMonitorInfo();
 
     this->NormalizePresentParameters(pPresentParams);
@@ -54,10 +59,8 @@ namespace dxvk {
   D3D9SwapChainEx::~D3D9SwapChainEx() {
     RestoreDisplayMode(m_monitor);
 
+    m_device->waitForSubmission(&m_presentStatus);
     m_device->waitForIdle();
-
-    if (m_backBuffer)
-      m_backBuffer->ReleasePrivate();
   }
 
 
@@ -112,28 +115,36 @@ namespace dxvk {
     bool recreate = false;
     recreate   |= m_presenter == nullptr;
     recreate   |= window != m_window;    
+    recreate   |= m_dialogChanged;
 
     m_window    = window;
 
     m_dirty    |= vsync != m_vsync;
     m_dirty    |= UpdatePresentRegion(pSourceRect, pDestRect);
     m_dirty    |= recreate;
+    m_dirty    |= !m_presenter->hasSwapChain();
     m_vsync     = vsync;
 
-    if (recreate)
-      CreatePresenter();
-
-    if (std::exchange(m_dirty, false))
-      RecreateSwapChain(vsync);
-
-    FlushDevice();
+    m_dialogChanged = false;
 
     try {
+      if (recreate)
+        CreatePresenter();
+
+      if (std::exchange(m_dirty, false))
+        RecreateSwapChain(vsync);
+
+      // We aren't going to device loss simply because
+      // 99% of D3D9 games don't handle this properly and
+      // just end up crashing (like with alt-tab loss)
+      if (!m_presenter->hasSwapChain())
+        return D3D_OK;
+
       PresentImage(presentInterval);
       return D3D_OK;
     } catch (const DxvkError& e) {
       Logger::err(e.message());
-      return D3DERR_INVALIDCALL;
+      return D3DERR_DEVICEREMOVED;
     }
   }
 
@@ -158,7 +169,7 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
     }
 
-    *ppBackBuffer = ref(m_backBuffer);
+    *ppBackBuffer = m_backBuffer.ref();
 
     return D3D_OK;
   }
@@ -183,7 +194,7 @@ namespace dxvk {
     uint32_t scanLineCount = mode.Height + vBlankLineCount;
 
     auto nowUs = std::chrono::time_point_cast<std::chrono::microseconds>(
-      std::chrono::high_resolution_clock::now())
+      dxvk::high_resolution_clock::now())
       .time_since_epoch();
 
     auto frametimeUs = std::chrono::microseconds(1000000u / mode.RefreshRate);
@@ -271,7 +282,7 @@ namespace dxvk {
   }
 
 
-  HRESULT D3D9SwapChainEx::Reset(
+  void    D3D9SwapChainEx::Reset(
           D3DPRESENT_PARAMETERS* pPresentParams,
           D3DDISPLAYMODEEX*      pFullscreenDisplayMode) {
     auto lock = m_parent->LockDevice();
@@ -325,7 +336,13 @@ namespace dxvk {
 
     UpdatePresentRegion(nullptr, nullptr);
     CreateBackBuffer();
-    return D3D_OK;
+
+    // If we would fail to go into dialog box mode with
+    // the new mode, let's escape from dialog mode.
+    HRESULT hr = SetDialogBoxMode(m_dialog);
+
+    if (FAILED(hr))
+      SetDialogBoxMode(false);
   }
 
 
@@ -382,6 +399,32 @@ namespace dxvk {
   }
 
 
+  HRESULT D3D9SwapChainEx::SetDialogBoxMode(bool bEnableDialogs) {
+    if (bEnableDialogs) {
+      if (m_presentParams.BackBufferFormat != D3DFMT_X1R5G5B5 &&
+          m_presentParams.BackBufferFormat != D3DFMT_R5G6B5   &&
+          m_presentParams.BackBufferFormat != D3DFMT_X8R8G8B8)
+        return D3DERR_INVALIDCALL;
+
+      if (m_presentParams.SwapEffect == D3DSWAPEFFECT_DISCARD)
+        return D3DERR_INVALIDCALL;
+
+      if (m_presentParams.Flags & D3DPRESENTFLAG_LOCKABLE_BACKBUFFER)
+        return D3DERR_INVALIDCALL;
+    }
+
+    m_dialogChanged = m_dialog != bEnableDialogs;
+    m_dialog        = bEnableDialogs;
+
+    return D3D_OK;
+  }
+
+
+  D3D9Surface* D3D9SwapChainEx::GetBackBuffer(UINT iBackBuffer) {
+    return m_backBuffer.ptr();
+  }
+
+
   void D3D9SwapChainEx::NormalizePresentParameters(D3DPRESENT_PARAMETERS* pPresentParams) {
     if (pPresentParams->hDeviceWindow == nullptr)
       pPresentParams->hDeviceWindow    = m_parent->GetWindow();
@@ -408,12 +451,11 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::PresentImage(UINT SyncInterval) {
+    m_parent->Flush();
+
     // Wait for the sync event so that we respect the maximum frame latency
-    auto syncEvent = m_parent->GetFrameSyncEvent(m_presentParams.BackBufferCount);
-    syncEvent->wait();
-    
-    if (m_hud != nullptr)
-      m_hud->update();
+    uint64_t frameId = ++m_frameId;
+    m_frameLatencySignal->wait(frameId - GetActualFrameLatency());
 
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
       SynchronizePresent();
@@ -469,15 +511,23 @@ namespace dxvk {
       DxvkRenderTargets renderTargets;
       renderTargets.color[0].view   = m_imageViews.at(imageIndex);
       renderTargets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      m_context->bindRenderTargets(renderTargets, false);
+      m_context->bindRenderTargets(renderTargets);
 
       VkViewport viewport;
       viewport.x        = float(m_dstRect.left);
       viewport.y        = float(m_dstRect.top);
-      viewport.width    = float(info.imageExtent.width  - m_dstRect.left);
-      viewport.height   = float(info.imageExtent.height - m_dstRect.top);
+      viewport.width    = float(m_dstRect.right  - m_dstRect.left);
+      viewport.height   = float(m_dstRect.bottom - m_dstRect.top);
       viewport.minDepth = 0.0f;
       viewport.maxDepth = 1.0f;
+
+      VkRect2D scissor;
+      scissor.offset.x      = 0;
+      scissor.offset.y      = 0;
+      scissor.extent.width  = m_dstRect.right  - m_dstRect.left;
+      scissor.extent.height = m_dstRect.bottom - m_dstRect.top;
+
+      m_context->setViewports(1, &viewport, &scissor);
 
       D3D9PresentInfo presentInfoConsts;
       presentInfoConsts.scale[0]  = float(m_srcRect.right  - m_srcRect.left) / float(m_swapImage->info().extent.width);
@@ -487,14 +537,6 @@ namespace dxvk {
       presentInfoConsts.offset[1] = float(m_srcRect.top)  / float(m_swapImage->info().extent.height);
 
       m_context->pushConstants(0, sizeof(D3D9PresentInfo), &presentInfoConsts);
-      
-      VkRect2D scissor;
-      scissor.offset.x      = 0;
-      scissor.offset.y      = 0;
-      scissor.extent.width  = info.imageExtent.width  - m_dstRect.left;
-      scissor.extent.height = info.imageExtent.height - m_dstRect.top;
-
-      m_context->setViewports(1, &viewport, &scissor);
 
       m_context->setRasterizerState(m_rsState);
       m_context->setMultisampleState(m_msState);
@@ -514,22 +556,38 @@ namespace dxvk {
       m_context->draw(3, 1, 0, 0);
 
       if (m_hud != nullptr)
-        m_hud->render(m_context, info.imageExtent);
-      
+        m_hud->render(m_context, info.format, info.imageExtent);
+
       if (i + 1 >= SyncInterval)
-        m_context->queueSignal(syncEvent);
+        m_context->signal(m_frameLatencySignal, frameId);
 
-      m_device->submitCommandList(
-        m_context->endRecording(),
-        sync.acquire, sync.present);
-      
-      m_device->presentImage(m_presenter,
-        sync.present, &m_presentStatus);
-
-      if (m_presentStatus.result != VK_NOT_READY
-       && m_presentStatus.result != VK_SUCCESS)
-        RecreateSwapChain(m_vsync);
+      SubmitPresent(sync, i);
     }
+  }
+
+
+  void D3D9SwapChainEx::SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId) {
+    // Present from CS thread so that we don't
+    // have to synchronize with it first.
+    m_presentStatus.result = VK_NOT_READY;
+
+    m_parent->EmitCs([this,
+      cFrameId     = FrameId,
+      cSync        = Sync,
+      cHud         = m_hud,
+      cCommandList = m_context->endRecording()
+    ] (DxvkContext* ctx) {
+      m_device->submitCommandList(cCommandList,
+        cSync.acquire, cSync.present);
+
+      if (cHud != nullptr && !cFrameId)
+        cHud->update();
+
+      m_device->presentImage(m_presenter,
+        cSync.present, &m_presentStatus);
+    });
+
+    m_parent->FlushCsChunk();
   }
 
 
@@ -545,6 +603,8 @@ namespace dxvk {
   void D3D9SwapChainEx::RecreateSwapChain(BOOL Vsync) {
     // Ensure that we can safely destroy the swap chain
     m_device->waitForSubmission(&m_presentStatus);
+    m_device->waitForIdle();
+
     m_presentStatus.result = VK_SUCCESS;
 
     vk::PresenterDesc presenterDesc;
@@ -552,6 +612,7 @@ namespace dxvk {
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(Vsync, presenterDesc.presentModes);
+    presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
     if (m_presenter->recreateSwapChain(presenterDesc) != VK_SUCCESS)
       throw DxvkError("D3D9SwapChainEx: Failed to recreate swap chain");
@@ -573,6 +634,7 @@ namespace dxvk {
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
     presenterDesc.numPresentModes = PickPresentModes(false, presenterDesc.presentModes);
+    presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
     m_presenter = new vk::Presenter(m_window,
       m_device->adapter()->vki(),
@@ -626,20 +688,9 @@ namespace dxvk {
   }
 
 
-  void D3D9SwapChainEx::FlushDevice() {
-    // The presentation code is run from the main rendering thread
-    // rather than the command stream thread, so we synchronize.
-    m_parent->Flush();
-    m_parent->SynchronizeCsThread();
-  }
-
-
   void D3D9SwapChainEx::CreateBackBuffer() {
     // Explicitly destroy current swap image before
     // creating a new one to free up resources
-    if (m_backBuffer)
-      m_backBuffer->ReleasePrivate();
-    
     m_swapImage         = nullptr;
     m_swapImageResolve  = nullptr;
     m_swapImageView     = nullptr;
@@ -659,8 +710,9 @@ namespace dxvk {
     desc.Usage              = D3DUSAGE_RENDERTARGET;
     desc.Discard            = FALSE;
 
-    m_backBuffer = new D3D9Surface(m_parent, &desc);
-    m_backBuffer->AddRefPrivate();
+    auto mapping = m_parent->LookupFormat(desc.Format);
+
+    m_backBuffer = new D3D9Surface(m_parent, &desc, mapping);
 
     m_swapImage = m_backBuffer->GetCommonTexture()->GetImage();
 
@@ -800,6 +852,9 @@ namespace dxvk {
 
   void D3D9SwapChainEx::CreateHud() {
     m_hud = hud::Hud::createHud(m_device);
+
+    if (m_hud != nullptr)
+      m_hud->addItem<hud::HudSamplerCount>("samplers", m_parent);
   }
 
 
@@ -913,6 +968,18 @@ namespace dxvk {
       m_ramp.green[i] = identity;
       m_ramp.blue[i]  = identity;
     }
+  }
+
+
+
+  uint32_t D3D9SwapChainEx::GetActualFrameLatency() {
+    uint32_t maxFrameLatency = m_parent->GetFrameLatency();
+
+    if (m_frameLatencyCap)
+      maxFrameLatency = std::min(maxFrameLatency, m_frameLatencyCap);
+
+    maxFrameLatency = std::min(maxFrameLatency, m_presentParams.BackBufferCount + 1);
+    return maxFrameLatency;
   }
 
 
@@ -1137,6 +1204,13 @@ namespace dxvk {
 
     if (!::GetMonitorInfoW(GetDefaultMonitor(), reinterpret_cast<MONITORINFO*>(&m_monInfo)))
       throw DxvkError("D3D9SwapChainEx::GetDisplayModeEx: Failed to query monitor info");
+  }
+
+
+  VkFullScreenExclusiveEXT D3D9SwapChainEx::PickFullscreenMode() {
+    return m_dialog
+      ? VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT
+      : VK_FULL_SCREEN_EXCLUSIVE_DEFAULT_EXT;
   }
 
 }

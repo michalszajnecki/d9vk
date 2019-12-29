@@ -84,4 +84,9 @@ namespace dxvk {
 
   };
 
+  template <typename T>
+  inline D3D9CommonBuffer* GetCommonBuffer(const T& pResource) {
+    return pResource != nullptr ? pResource->GetCommonBuffer() : nullptr;
+  }
+
 }

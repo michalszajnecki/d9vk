@@ -7,12 +7,7 @@ namespace dxvk {
   : m_device(device),
     m_submitThread([this] () { submitCmdLists(); }),
     m_finishThread([this] () { finishCmdLists(); }) {
-    // Asynchronous presentation seems to increase the
-    // likelyhood of hangs on Nvidia for some reason.
-    m_asyncPresent = !m_device->adapter()->matchesDriver(
-      DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0);
 
-    applyTristate(m_asyncPresent, m_device->config().asyncPresent);
   }
   
   
@@ -48,21 +43,12 @@ namespace dxvk {
   void DxvkSubmissionQueue::present(DxvkPresentInfo presentInfo, DxvkSubmitStatus* status) {
     std::unique_lock<std::mutex> lock(m_mutex);
 
-    if (m_asyncPresent) {
-      DxvkSubmitEntry entry = { };
-      entry.status  = status;
-      entry.present = std::move(presentInfo);
+    DxvkSubmitEntry entry = { };
+    entry.status  = status;
+    entry.present = std::move(presentInfo);
 
-      m_submitQueue.push(std::move(entry));
-      m_appendCond.notify_all();
-    } else {
-      m_submitCond.wait(lock, [this] {
-        return m_submitQueue.empty();
-      });
-
-      VkResult result = presentInfo.presenter->presentImage(presentInfo.waitSync);
-      status->result.store(result);
-    }
+    m_submitQueue.push(std::move(entry));
+    m_appendCond.notify_all();
   }
 
 
@@ -114,7 +100,8 @@ namespace dxvk {
       // Submit command buffer to device
       VkResult status = VK_NOT_READY;
 
-      { std::lock_guard<std::mutex> lock(m_mutexQueue);
+      if (m_lastError != VK_ERROR_DEVICE_LOST) {
+        std::lock_guard<std::mutex> lock(m_mutexQueue);
 
         if (entry.submit.cmdList != nullptr) {
           status = entry.submit.cmdList->submit(
@@ -124,6 +111,10 @@ namespace dxvk {
           status = entry.present.presenter->presentImage(
             entry.present.waitSync);
         }
+      } else {
+        // Don't submit anything after device loss
+        // so that drivers get a chance to recover
+        status = VK_ERROR_DEVICE_LOST;
       }
 
       if (entry.status)
@@ -135,8 +126,10 @@ namespace dxvk {
       if (status == VK_SUCCESS) {
         if (entry.submit.cmdList != nullptr)
           m_finishQueue.push(std::move(entry));
-      } else if (entry.submit.cmdList != nullptr) {
+      } else if (status == VK_ERROR_DEVICE_LOST || entry.submit.cmdList != nullptr) {
         Logger::err(str::format("DxvkSubmissionQueue: Command submission failed: ", status));
+        m_lastError = status;
+        m_device->waitForIdle();
       }
 
       m_submitQueue.pop();
@@ -152,13 +145,13 @@ namespace dxvk {
 
     while (!m_stopped.load()) {
       if (m_finishQueue.empty()) {
-        auto t0 = std::chrono::high_resolution_clock::now();
+        auto t0 = dxvk::high_resolution_clock::now();
 
         m_submitCond.wait(lock, [this] {
           return m_stopped.load() || !m_finishQueue.empty();
         });
 
-        auto t1 = std::chrono::high_resolution_clock::now();
+        auto t1 = dxvk::high_resolution_clock::now();
         m_gpuIdle += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
       }
 
@@ -168,18 +161,21 @@ namespace dxvk {
       DxvkSubmitEntry entry = std::move(m_finishQueue.front());
       lock.unlock();
       
-      VkResult status = entry.submit.cmdList->synchronize();
+      VkResult status = m_lastError.load();
       
-      if (status == VK_SUCCESS) {
-        entry.submit.cmdList->notifySignals();
-        entry.submit.cmdList->reset();
-        
-        m_device->recycleCommandList(entry.submit.cmdList);
-      } else {
-        Logger::err(str::format(
-          "DxvkSubmissionQueue: Failed to sync fence: ",
-          status));
+      if (status != VK_ERROR_DEVICE_LOST)
+        status = entry.submit.cmdList->synchronize();
+      
+      if (status != VK_SUCCESS) {
+        Logger::err(str::format("DxvkSubmissionQueue: Failed to sync fence: ", status));
+        m_lastError = status;
+        m_device->waitForIdle();
       }
+
+      entry.submit.cmdList->notifySignals();
+      entry.submit.cmdList->reset();
+
+      m_device->recycleCommandList(entry.submit.cmdList);
 
       lock = std::unique_lock<std::mutex>(m_mutex);
       m_pending -= 1;
